@@ -1,0 +1,211 @@
+{
+  "backend": {
+    "type": "string",
+    "description": "当前服务",
+    "hint": "本地 API 与官方 API 分别保存连接设置。",
+    "default": "local",
+    "options": [
+      "local",
+      "cloud"
+    ]
+  },
+  "local": {
+    "type": "object",
+    "description": "本地 API",
+    "hint": "兼容开源服务及启用 Bearer 鉴权的部署。",
+    "items": {
+      "base_url": {
+        "type": "string",
+        "description": "服务地址",
+        "hint": "支持根地址或 /v1，保留反向代理路径前缀。",
+        "default": "http://127.0.0.1:7860"
+      },
+      "api_key": {
+        "type": "string",
+        "description": "API Key",
+        "hint": "仅填写密钥本身。留空用于本地无鉴权服务。",
+        "default": "",
+        "secret": true
+      },
+      "mode": {
+        "type": "string",
+        "description": "合成模式",
+        "hint": "reference 需要参考录音和准确文字稿；design 需要声音描述。",
+        "default": "reference",
+        "options": [
+          "reference",
+          "design",
+          "plain"
+        ]
+      },
+      "reference_id": {
+        "type": "string",
+        "description": "默认参考录音 ID",
+        "hint": "在 BreezeTTS 工作台上传录音并选择默认音色。",
+        "default": ""
+      },
+      "instruction": {
+        "type": "text",
+        "description": "声音 / 语气描述",
+        "hint": "声音设计时填写声线特征；参考音色模式下控制语气。",
+        "default": ""
+      },
+      "cfg_scale": {
+        "type": "float",
+        "description": "CFG 强度",
+        "hint": "普通朗读或纯音色复刻建议 1，带指令可尝试 4。",
+        "default": 1.0
+      },
+      "seed": {
+        "type": "int",
+        "description": "随机种子",
+        "hint": "同样输入与种子有助于复现声音。",
+        "default": 42
+      }
+    }
+  },
+  "cloud": {
+    "type": "object",
+    "description": "BreezeBlue 官方 API",
+    "hint": "需要官方 API Key 与已保存的音色 ID。",
+    "items": {
+      "base_url": {
+        "type": "string",
+        "description": "服务地址",
+        "hint": "支持根地址或 /v1，保留反向代理路径前缀。",
+        "default": "https://api.breeze.blue/v1"
+      },
+      "api_key": {
+        "type": "string",
+        "description": "API Key",
+        "hint": "仅填写密钥本身。留空用于本地无鉴权服务。",
+        "default": "",
+        "secret": true
+      },
+      "voice_id": {
+        "type": "string",
+        "description": "官方音色 ID",
+        "hint": "在工作台同步并选择官方音色，也可手动填写。",
+        "default": ""
+      },
+      "model_id": {
+        "type": "string",
+        "description": "模型 ID",
+        "hint": "留空由官方自动选择，也可在工作台连接检查后选择。",
+        "default": ""
+      },
+      "language_code": {
+        "type": "string",
+        "description": "语言代码",
+        "hint": "留空自动识别，或使用 zh、en、ja 等两位代码。",
+        "default": ""
+      },
+      "instructions": {
+        "type": "text",
+        "description": "表演指令",
+        "hint": "建议使用与合成文字相同的语言描述语气和情绪。",
+        "default": ""
+      },
+      "guidance_scale": {
+        "type": "float",
+        "description": "指导强度",
+        "hint": "1–10，带表演指令时可尝试 4。",
+        "default": 1.0
+      },
+      "speed": {
+        "type": "float",
+        "description": "语速",
+        "hint": "官方语速倍率，0.5–2。",
+        "default": 1.0
+      },
+      "volume": {
+        "type": "float",
+        "description": "音量",
+        "hint": "官方线性音量倍率，0.01–2。",
+        "default": 1.0
+      },
+      "speaker_boost": {
+        "type": "bool",
+        "description": "增强音色相似度",
+        "hint": "官方 use_speaker_boost 参数。",
+        "default": false
+      },
+      "output_format": {
+        "type": "string",
+        "description": "输出格式",
+        "hint": "本地 PCM 自动封装 WAV；此处仅控制官方输出。",
+        "default": "wav",
+        "options": [
+          "aac",
+          "aac_24000_128",
+          "flac",
+          "flac_24000",
+          "mp3",
+          "mp3_24000_128",
+          "mp3_24000_160",
+          "mp3_24000_64",
+          "mp3_24000_96",
+          "opus",
+          "pcm",
+          "pcm_24000",
+          "wav",
+          "wav_24000"
+        ]
+      },
+      "delivery": {
+        "type": "string",
+        "description": "交付方式",
+        "hint": "sync 同步音频；stream 接收完整流；async 轮询后台任务。",
+        "default": "sync",
+        "options": [
+          "sync",
+          "stream",
+          "async"
+        ]
+      }
+    }
+  },
+  "behavior": {
+    "type": "object",
+    "description": "聊天与运行设置",
+    "hint": "聊天命令、工具、自动语音及数据保留。",
+    "items": {
+      "auto_tts": {
+        "type": "bool",
+        "description": "自动语音回复",
+        "hint": "对已完成的非流式 LLM 文字回复附加语音；失败保留文字。",
+        "default": false
+      },
+      "keep_text": {
+        "type": "bool",
+        "description": "保留自动回复文字",
+        "hint": "关闭后仅在合成成功时移除文字组件。",
+        "default": true
+      },
+      "tool_enabled": {
+        "type": "bool",
+        "description": "允许 LLM 语音工具",
+        "hint": "允许模型通过 breeze_tts 工具主动发送语音。",
+        "default": true
+      },
+      "max_characters": {
+        "type": "int",
+        "description": "单次文字上限",
+        "hint": "1–2000，官方默认账号上限 1000，提升前请确认账户权限。",
+        "default": 1000
+      },
+      "timeout": {
+        "type": "int",
+        "description": "合成总超时（秒）",
+        "hint": "包含插件排队、官方后台任务轮询和音频下载。",
+        "default": 600
+      },
+      "history_limit": {
+        "type": "int",
+        "description": "成品 / 预览保留数量",
+        "hint": "1–200；参考录音最多 100 条，需手动删除。",
+        "default": 50
+      }
+    }
+  }
+}

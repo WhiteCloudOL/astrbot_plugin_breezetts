@@ -1,0 +1,1 @@
+"""BreezeTTS AstrBot plugin package."""
