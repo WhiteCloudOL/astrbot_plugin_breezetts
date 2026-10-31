@@ -15,4 +15,3 @@ playwright-report/
 *.mp3
 *.pcm
 *.zip
-!tests/fixtures/

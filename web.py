@@ -136,7 +136,7 @@ class WorkbenchAPI:
                 raise BreezeError("参考录音超过 20 MiB 上限。")
         async with self.service.lock:
             assert self.service.store is not None
-            item = await asyncio.to_thread(
+            item = await self.service.io(
                 self.service.store.upload,
                 bytes(data),
                 upload.filename or "reference.wav",
@@ -168,7 +168,7 @@ class WorkbenchAPI:
             previous = dict(item)
             item.update(name=name.strip(), ref_text=text.strip())
             try:
-                await asyncio.to_thread(store.persist)
+                await self.service.io(store.persist)
             except OSError:
                 store.items[payload["id"]] = previous
                 raise
@@ -185,7 +185,7 @@ class WorkbenchAPI:
             if payload.get("id") == self.service.settings()["local"]["reference_id"]:
                 raise BreezeError("该录音正在作为默认音色使用，请先更换默认音色。")
             assert self.service.store is not None
-            await asyncio.to_thread(self.service.store.remove, payload.get("id"))
+            await self.service.io(self.service.store.remove, payload.get("id"))
         return json_response({"deleted": True})
 
     @web_errors
@@ -224,7 +224,7 @@ class WorkbenchAPI:
                     source.seek(offset)
                     return source.read(512 * 1024)
 
-            data = await asyncio.to_thread(read_chunk)
+            data = await self.service.io(read_chunk)
             item = store.items[audio_id]
             return json_response(
                 {

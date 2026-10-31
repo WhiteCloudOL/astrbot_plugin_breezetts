@@ -32,13 +32,34 @@ class BreezeService:
         self.closed = False
         self.active = 0
 
+    async def io(self, operation, *args, **kwargs):
+        """Finish filesystem work before releasing its lock on cancellation.
+
+        Args:
+            operation: Blocking filesystem operation to run in a worker thread.
+            *args: Positional operation arguments.
+            **kwargs: Keyword operation arguments.
+
+        Returns:
+            The operation's result.
+
+        Raises:
+            asyncio.CancelledError: After the in-flight filesystem work finishes.
+        """
+        task = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+
     async def start(self) -> None:
         """Load persistent data and acquire the HTTP session once."""
         async with self.lock:
             if self.closed:
                 raise BreezeError("插件正在关闭，请稍后重试。")
             if self.store is None:
-                self.store = await asyncio.to_thread(AudioStore, self.root)
+                self.store = await self.io(AudioStore, self.root)
             await self.client.start()
 
     async def close(self) -> None:
@@ -116,7 +137,7 @@ class BreezeService:
             self.config.clear()
             self.config.update(candidate)
             try:
-                await asyncio.to_thread(self.config.save_config)
+                await self.io(self.config.save_config)
             except Exception:
                 self.config.clear()
                 self.config.update(previous)
@@ -195,7 +216,7 @@ class BreezeService:
                     if item["kind"] != "reference":
                         raise BreezeError("请在音色库中选择参考录音。")
                     reference = (
-                        await asyncio.to_thread(path.read_bytes),
+                        await self.io(path.read_bytes),
                         item.get("ref_text", ""),
                     )
 
@@ -222,7 +243,7 @@ class BreezeService:
                 self.requests.discard(generation)
             async with self.lock:
                 assert self.store is not None
-                result = await asyncio.to_thread(
+                result = await self.io(
                     self.store.add,
                     audio,
                     extension,
@@ -230,9 +251,7 @@ class BreezeService:
                     text.strip()[:60],
                     backend=config["backend"],
                 )
-                await asyncio.to_thread(
-                    self.store.prune, config["behavior"]["history_limit"]
-                )
+                await self.io(self.store.prune, config["behavior"]["history_limit"])
                 return result
         finally:
             self.active -= 1
@@ -343,7 +362,7 @@ class BreezeService:
                     raise BreezeError(
                         "官方克隆需要至少 3 秒、规范化后不超过 5 MB 的参考录音。"
                     )
-                recording = await asyncio.to_thread(path.read_bytes)
+                recording = await self.io(path.read_bytes)
         else:
             for key in ("description", "text"):
                 if (
@@ -364,12 +383,10 @@ class BreezeService:
         if audio:
             async with self.lock:
                 assert self.store is not None
-                result["audio"] = await asyncio.to_thread(
+                result["audio"] = await self.io(
                     self.store.add, *audio, "preview", payload["name"]
                 )
-                await asyncio.to_thread(
-                    self.store.prune, config["behavior"]["history_limit"]
-                )
+                await self.io(self.store.prune, config["behavior"]["history_limit"])
         return result
 
     async def save_preview(self, payload: dict) -> dict:

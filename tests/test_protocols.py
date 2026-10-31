@@ -4,6 +4,7 @@ import asyncio
 import base64
 import copy
 import io
+import threading
 import wave
 
 import pytest
@@ -271,3 +272,41 @@ async def test_total_timeout_releases_slot(service, config, monkeypatch):
     with pytest.raises(BreezeError, match="超时"):
         await service.synthesize("测试", config=snapshot)
     assert service.active == 0 and not service.slots.locked()
+
+
+async def test_cancelled_filesystem_work_finishes_before_return(service):
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def write_file():
+        started.set()
+        release.wait(2)
+        finished.set()
+
+    task = asyncio.create_task(service.io(write_file))
+    await asyncio.to_thread(started.wait, 2)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert finished.is_set()
+
+
+async def test_close_cancels_chat_synthesis(server, service, config):
+    started = asyncio.Event()
+
+    async def handle(request):
+        started.set()
+        await asyncio.sleep(0.2)
+        return web.Response(body=b"\0\0", content_type="audio/pcm")
+
+    config["local"].update(base_url=await server(handle), mode="plain")
+    task = asyncio.create_task(service.synthesize("测试"))
+    await asyncio.wait_for(started.wait(), 3)
+    await service.close()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not service.requests and service.active == 0

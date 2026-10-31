@@ -24,7 +24,7 @@ class BreezeClient:
         """Acquire the plugin-owned HTTP session in the running event loop."""
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=None, connect=15, sock_read=180),
+                timeout=aiohttp.ClientTimeout(total=1800, connect=15),
                 trust_env=False,
             )
 
