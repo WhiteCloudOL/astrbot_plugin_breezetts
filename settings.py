@@ -62,6 +62,35 @@ FORMATS = {
 class BreezeError(ValueError):
     """Represent a safe error that can be displayed without exposing credentials."""
 
+    def __init__(self, message: str, *, code: str = "validation"):
+        super().__init__(message)
+        self.code = code
+
+
+def validate_identifier(value: object, label: str, limit: int = 500) -> str:
+    """Validate identifiers that occupy one URL path segment.
+
+    Args:
+        value: Identifier from configuration or an upstream response.
+        label: Safe field label used in validation errors.
+        limit: Maximum identifier length.
+
+    Returns:
+        The unchanged valid identifier.
+
+    Raises:
+        BreezeError: If the identifier is empty, oversized, or a dot segment.
+    """
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= limit
+        or value in {".", ".."}
+        or value != value.strip()
+        or any(ord(c) < 32 or ord(c) == 127 for c in value)
+    ):
+        raise BreezeError(f"{label} 无效，请检查配置或服务响应。")
+    return value
+
 
 def api_root(base_url: str) -> str:
     """Normalize a service root while retaining reverse proxy path prefixes.
@@ -75,6 +104,8 @@ def api_root(base_url: str) -> str:
     Raises:
         BreezeError: If the address cannot safely identify a service root.
     """
+    if not isinstance(base_url, str) or len(base_url) > 2048 or "\\" in base_url:
+        raise BreezeError("服务地址无效，请填写完整的 HTTP(S) 地址。")
     try:
         parsed = urlsplit(base_url.strip())
         port = parsed.port
@@ -128,7 +159,9 @@ def validate_config(value: dict) -> dict:
             for key, expected in default.items():
                 actual = result[group][key]
                 if isinstance(expected, float):
-                    valid = type(actual) in {int, float} and math.isfinite(actual)
+                    valid = type(actual) is int or (
+                        type(actual) is float and math.isfinite(actual)
+                    )
                 else:
                     valid = type(actual) is type(expected)
                 if not valid:
@@ -180,4 +213,6 @@ def validate_config(value: dict) -> dict:
         raise BreezeError("语言代码须为空或两位字母，如 zh、en、ja。")
     if len(cloud["model_id"]) > 120 or len(cloud["voice_id"]) > 500:
         raise BreezeError("模型或音色 ID 过长。")
+    if cloud["voice_id"]:
+        validate_identifier(cloud["voice_id"], "音色 ID")
     return result

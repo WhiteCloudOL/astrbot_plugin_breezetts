@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .client import BreezeClient
-from .settings import BreezeError, validate_config
+from .settings import BreezeError, validate_config, validate_identifier
 from .storage import AudioStore
 
 
@@ -119,7 +119,10 @@ class BreezeService:
         if (
             not isinstance(draft, dict)
             or not isinstance(clear_keys, list)
-            or any(key not in {"local", "cloud"} for key in clear_keys)
+            or any(
+                not isinstance(key, str) or key not in {"local", "cloud"}
+                for key in clear_keys
+            )
         ):
             raise BreezeError("配置格式不正确。")
         async with self.lock:
@@ -130,7 +133,7 @@ class BreezeService:
                     raise BreezeError("请提交完整的连接配置。")
                 if backend in clear_keys:
                     candidate[backend]["api_key"] = ""
-                elif not candidate[backend].get("api_key"):
+                elif candidate[backend].get("api_key", "") == "":
                     candidate[backend]["api_key"] = current[backend]["api_key"]
             candidate = validate_config(candidate)
             previous = copy.deepcopy(dict(self.config))
@@ -138,10 +141,15 @@ class BreezeService:
             self.config.update(candidate)
             try:
                 await self.io(self.config.save_config)
-            except Exception:
+            except Exception as exc:
                 self.config.clear()
                 self.config.update(previous)
-                raise BreezeError("配置保存失败，请检查数据目录写入权限。") from None
+                self.logger.error(
+                    "Breeze configuration save failed (%s).", type(exc).__name__
+                )
+                raise BreezeError(
+                    "配置保存失败，请检查数据目录写入权限。", code="storage"
+                ) from None
         return await self.state()
 
     async def connection(self) -> dict:
@@ -229,6 +237,8 @@ class BreezeService:
                             )
                     return await self.client.synthesize(config, text.strip())
 
+            if self.closed:
+                raise BreezeError("插件正在关闭，请稍后重试。")
             generation = asyncio.create_task(generate())
             self.requests.add(generation)
             try:
@@ -251,8 +261,19 @@ class BreezeService:
                     text.strip()[:60],
                     backend=config["backend"],
                 )
-                await self.io(self.store.prune, config["behavior"]["history_limit"])
+                try:
+                    await self.io(self.store.prune, config["behavior"]["history_limit"])
+                except OSError as exc:
+                    self.logger.warning(
+                        "Breeze output saved; history cleanup failed (%s).",
+                        type(exc).__name__,
+                    )
                 return result
+        except OSError as exc:
+            self.logger.error("Breeze audio storage failed (%s).", type(exc).__name__)
+            raise BreezeError(
+                "音频文件操作失败，请检查数据目录权限与可用空间。", code="storage"
+            ) from None
         finally:
             self.active -= 1
 
@@ -302,6 +323,9 @@ class BreezeService:
                 self.jobs[job_id].update(status="cancelled", error="任务已取消。")
                 raise
             except BreezeError as exc:
+                self.logger.warning(
+                    "Breeze job failed (operation=%s, code=%s).", operation, exc.code
+                )
                 self.jobs[job_id].update(status="failed", error=str(exc))
             except (TimeoutError, asyncio.TimeoutError):
                 self.jobs[job_id].update(
@@ -335,12 +359,16 @@ class BreezeService:
         Raises:
             BreezeError: If preview inputs do not satisfy the official API.
         """
+        await self.start()
+        if not isinstance(operation, str) or operation not in {"clone", "design"}:
+            raise BreezeError("音色预览类型无效。")
         if config["backend"] != "cloud" or not config["cloud"]["api_key"]:
             raise BreezeError("请先切换并配置 BreezeBlue 官方 API。")
         for key, maximum in (("name", 80), ("language_code", 2)):
             if (
                 not isinstance(payload.get(key), str)
-                or not 1 <= len(payload[key].strip()) <= maximum
+                or not payload[key].strip()
+                or not 1 <= len(payload[key]) <= maximum
             ):
                 raise BreezeError("请填写音色名称和两位语言代码。")
         language = payload["language_code"]
@@ -379,14 +407,25 @@ class BreezeService:
             "requires_verification": verification,
             "name": payload["name"],
             "language_code": language,
+            "audio_unavailable": not verification and audio is None,
         }
+        if result["audio_unavailable"]:
+            self.logger.warning(
+                "Breeze preview created; audition audio is unavailable."
+            )
         if audio:
             async with self.lock:
                 assert self.store is not None
                 result["audio"] = await self.io(
                     self.store.add, *audio, "preview", payload["name"]
                 )
-                await self.io(self.store.prune, config["behavior"]["history_limit"])
+                try:
+                    await self.io(self.store.prune, config["behavior"]["history_limit"])
+                except OSError as exc:
+                    self.logger.warning(
+                        "Breeze preview saved; history cleanup failed (%s).",
+                        type(exc).__name__,
+                    )
         return result
 
     async def save_preview(self, payload: dict) -> dict:
@@ -401,8 +440,11 @@ class BreezeService:
         Raises:
             BreezeError: If the save request or upstream response is invalid.
         """
+        await self.start()
         config = self.settings()
-        preview_id = payload.get("preview_id")
+        if not config["cloud"]["api_key"]:
+            raise BreezeError("请先填写并保存官方 API Key。")
+        preview_id = validate_identifier(payload.get("preview_id"), "音色预览 ID", 200)
         name, language = payload.get("name"), payload.get("language_code")
         if (
             not isinstance(preview_id, str)
@@ -429,6 +471,11 @@ class BreezeService:
             raise BreezeError(
                 "保存音色超时，请先同步官方音色，确认是否已保存。"
             ) from None
-        if not isinstance(result, dict) or not isinstance(result.get("voice_id"), str):
+        if (
+            not isinstance(result, dict)
+            or not isinstance(result.get("voice_id"), str)
+            or not 1 <= len(result["voice_id"]) <= 500
+            or result["voice_id"] in {".", ".."}
+        ):
             raise BreezeError("官方保存音色响应无效，请同步目录核对结果。")
         return {"voice_id": result["voice_id"]}

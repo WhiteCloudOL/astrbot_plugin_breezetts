@@ -150,7 +150,8 @@ async def test_authenticated_upload_edit_play_download_delete(host_http, wav_aud
     chunk = (
         await client.get(root + "audio/chunk", headers=auth, params={"id": item["id"]})
     ).json()
-    assert base64.b64decode(chunk["data"]).startswith(b"RIFF") and chunk["eof"]
+    assert "data" not in chunk
+    assert base64.b64decode(chunk["audio_base64"]).startswith(b"RIFF") and chunk["eof"]
     downloaded = await client.get(
         root + "audio/download", headers=auth, params={"id": item["id"]}
     )
@@ -176,7 +177,53 @@ async def test_authenticated_upload_edit_play_download_delete(host_http, wav_aud
     assert not plugin.service.store.items
 
 
-async def test_real_message_command_and_auto_reply(loaded_plugin, server):
+async def test_invalid_web_inputs_and_audio_boundaries(host_http, wav_audio, caplog):
+    client, auth, plugin, _ = host_http
+    root = "/api/v1/plugins/extensions/astrbot_plugin_breezetts/"
+    cases = [
+        ("settings", []),
+        ("settings", {"config": {"local": {}, "cloud": {}}, "clear_keys": [{}]}),
+        ("jobs/submit", {"operation": []}),
+        ("jobs/submit", {"operation": "synthesize", "payload": "text"}),
+        ("voices/save-preview", {"preview_id": ".."}),
+        ("audio/reference", []),
+        ("audio/reference", {"id": [], "name": "Name", "ref_text": "Text"}),
+        ("audio/delete", {"id": "../private"}),
+    ]
+    for endpoint, payload in cases:
+        response = await client.post(root + endpoint, headers=auth, json=payload)
+        assert response.status_code == 400, (endpoint, response.text)
+    assert (await client.post(root + "audio/upload", headers=auth)).status_code == 400
+    assert (
+        await client.post(
+            root + "audio/upload",
+            headers=auth,
+            files={"file": ("bad.wav", b"private-key-test", "audio/wav")},
+        )
+    ).status_code == 400
+    item = (
+        await client.post(
+            root + "audio/upload",
+            headers=auth,
+            files={"file": ("voice.wav", wav_audio, "audio/wav")},
+        )
+    ).json()
+    for offset in ("bad", "-1", str(item["size"] + 1)):
+        assert (
+            await client.get(
+                root + "audio/chunk",
+                headers=auth,
+                params={"id": item["id"], "offset": offset},
+            )
+        ).status_code == 400
+    plugin.service.store.path(item["id"]).write_bytes(b"shortened")
+    assert (
+        await client.get(root + "audio/chunk", headers=auth, params={"id": item["id"]})
+    ).status_code == 400
+    assert "private-key-test" not in caplog.text
+
+
+async def test_real_message_command_and_auto_reply(loaded_plugin, server, caplog):
     from aiohttp import web
     from astrbot.api.event import MessageEventResult, ResultContentType
     from astrbot.api.message_components import Plain, Record
@@ -223,6 +270,21 @@ async def test_real_message_command_and_auto_reply(loaded_plugin, server):
     assert len(event.get_result().chain) == 1 and isinstance(
         event.get_result().chain[0], Record
     )
+    event.send = AsyncMock(side_effect=RuntimeError("private-platform-message"))
+    outcome = await plugin.breeze_tts(event, "你好 hello world")
+    assert "发送失败" in outcome
+    count = len(plugin.service.store.items)
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("你好 hello world")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    assert len(plugin.service.store.items) == count
+    assert isinstance(event.get_result().chain[0], Plain)
+    assert "private-platform-message" not in caplog.text
+    event.set_extra("breezetts_voice_sent", False)
     plugin.config["local"]["base_url"] = "http://127.0.0.1:1"
     event.set_result(
         MessageEventResult(
@@ -280,7 +342,7 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             return web.Response(body=wav_audio, content_type="audio/wav")
         if request.path.endswith("/health"):
             return web.json_response({"status": "ok", "sample_rate": 24000})
-        return web.Response(body=wav_audio[44:], content_type="audio/pcm")
+        return web.Response(body=wav_audio[44:] * 4, content_type="audio/pcm")
 
     base_url = await server(upstream)
     plugin.config["local"].update(base_url=base_url, mode="plain")
@@ -308,9 +370,7 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
         return Response(
             path.read_bytes(),
             headers={"Access-Control-Allow-Origin": "*"},
-            media_type="text/css"
-            if path.suffix == ".css"
-            else "application/javascript",
+            media_type=page_service.guess_plugin_page_mime_type(path),
         )
 
     @app.get("/api/plugin/page/bridge-sdk.js")
@@ -342,6 +402,9 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await page.goto(f"http://127.0.0.1:{listener.getsockname()[1]}")
             frame = page.frame_locator("iframe")
             await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            assert await frame.locator(".brand-icon").evaluate(
+                "image => image.naturalWidth > 0"
+            )
             await frame.get_by_role("button", name="音色与录音").click()
             await frame.locator("#upload").set_input_files(
                 {"name": "试听录音.wav", "mimeType": "audio/wav", "buffer": wav_audio}
@@ -351,15 +414,55 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
                 "你好，这是参考录音的完整文字稿。"
             )
             await frame.get_by_role("button", name="保存录音信息").click()
-            await frame.get_by_role("button", name="设为本地音色").click()
-            await expect(frame.get_by_role("button", name="默认音色 ✓")).to_be_visible()
+            await expect(frame.locator("#cloud-voices-panel")).to_be_hidden()
+            await frame.get_by_role("button", name="设为当前音色").click()
+            await expect(frame.get_by_role("button", name="当前音色 ✓")).to_be_visible()
             await frame.get_by_role("button", name="合成试听", exact=True).click()
+            await frame.locator("#synthesis-text").fill("🎧")
+            await expect(frame.locator("#text-count")).to_have_text("1 / 1000")
             await frame.locator("#synthesis-text").fill(
                 "你好，愿每一段文字，都能找到属于自己的声音。"
             )
             await frame.locator("#synthesize").click()
             await expect(frame.locator(".audio-row")).to_have_count(1)
             await expect(frame.locator("#download-current")).to_be_enabled()
+            await expect(frame.locator("#player")).to_be_visible()
+            await expect(frame.locator("#player-state")).to_have_text("16.0 秒")
+            assert (
+                await page.frames[1]
+                .locator("#player")
+                .evaluate("audio => audio.duration")
+                == 16
+            )
+            await page.reload()
+            await expect(frame.locator("#player")).to_be_visible()
+            await expect(frame.locator("#player-state")).to_have_text("16.0 秒")
+            assert (
+                await page.frames[1]
+                .locator("#player")
+                .evaluate("audio => audio.paused")
+            )
+
+            async def fail_audio(route):
+                await route.fulfill(
+                    status=503,
+                    json={
+                        "status": "error",
+                        "message": "Audio temporarily unavailable",
+                    },
+                )
+
+            await page.route("**/audio/chunk**", fail_audio)
+            await (
+                frame.locator(".audio-row")
+                .first.get_by_role("button", name="试听", exact=True)
+                .click()
+            )
+            await expect(frame.locator("#player-state")).to_have_text("载入失败")
+            await expect(frame.locator("#download-current")).to_be_enabled()
+            await page.unroute("**/audio/chunk**", fail_audio)
+            await frame.locator("#retry-playback").click()
+            await expect(frame.locator("#player-state")).to_have_text("16.0 秒")
             async with page.expect_download() as download_info:
                 await frame.locator("#download-current").click()
             downloaded = await download_info.value
@@ -368,6 +471,24 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
                 os.environ.get("BREEZE_SCREENSHOT_DIR", tmp_path / "screenshots")
             )
             screenshot_dir.mkdir(parents=True, exist_ok=True)
+
+            async def capture_view(filename):
+                height = await page.frames[1].evaluate(
+                    "document.documentElement.scrollHeight"
+                )
+                await page.evaluate(
+                    "height => document.querySelector('iframe').style.height = height + 'px'",
+                    height,
+                )
+                try:
+                    await page.screenshot(
+                        path=str(screenshot_dir / filename), full_page=True
+                    )
+                finally:
+                    await page.evaluate(
+                        "document.querySelector('iframe').style.height = '100vh'"
+                    )
+
             await page.screenshot(
                 path=str(screenshot_dir / "studio-desktop.png"), full_page=True
             )
@@ -378,10 +499,44 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await frame.locator("#test-connection").click()
             await expect(frame.locator("#connection-result")).to_have_text("连接成功")
             await expect(frame.locator("#cloud-key")).to_have_value("")
+            await frame.locator('[data-config="behavior.auto_tts"]').check()
+            await expect(
+                frame.locator('[data-config="behavior.auto_tts"]')
+            ).to_be_checked()
+            await frame.locator('[data-config="behavior.auto_tts"]').uncheck()
+            await frame.locator("#clear-cloud-key").click()
+            await expect(frame.locator("#cloud-key-state")).to_have_text(
+                "密钥已清空 · 保存后生效"
+            )
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            assert plugin.config["cloud"]["api_key"] == ""
+            await frame.locator("#cloud-key").fill("browser-test-key")
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+
             await expect(frame.locator("#cloud-key")).to_have_attribute(
                 "placeholder", "已配置密钥；留空保留，输入新值替换"
             )
+
+            async def delayed_settings(route):
+                await asyncio.sleep(0.35)
+                await route.continue_()
+
+            await page.route("**/settings", delayed_settings)
+            await frame.locator("#max-characters").fill("1001")
+            await frame.locator("#save").click()
+            await frame.locator("#timeout").fill("700")
+            await expect(frame.locator("#save")).to_be_enabled()
+            await expect(frame.locator("#timeout")).to_have_value("700")
+            assert plugin.config["behavior"]["timeout"] == 600
+            await page.unroute("**/settings", delayed_settings)
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            assert plugin.config["behavior"]["timeout"] == 700
             await frame.get_by_role("button", name="音色与录音").click()
+            await expect(frame.locator("#local-voices-panel")).to_be_hidden()
+            await expect(frame.locator("#cloud-voices-panel")).to_be_visible()
             await frame.locator("#voice-type").select_option("default")
             await frame.locator("#sync-voices").click()
             await expect(frame.locator(".voice-card")).to_have_count(1)
@@ -392,23 +547,53 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await frame.locator("#create-preview").click()
             await expect(frame.locator("#save-preview")).to_be_visible(timeout=15000)
             assert not saved_previews
+
+            async def fail_settings(route):
+                await route.fulfill(
+                    status=500,
+                    json={"status": "error", "message": "Temporary save failure"},
+                )
+
+            await page.route("**/settings", fail_settings)
+            await frame.locator("#save-preview").click()
+            await expect(frame.locator("#save-preview")).to_have_text("设为当前音色")
+            await page.unroute("**/settings", fail_settings)
             await frame.locator("#save-preview").click()
             await expect(frame.locator("#preview-result")).to_be_hidden()
             assert saved_previews == [
                 {"voice_name": "工作台音色", "language_code": "zh"}
             ]
             actual_frame = page.frames[1]
-            for width, height in [(1440, 1040), (390, 844)]:
+            for width, height in [
+                (1440, 1040),
+                (1024, 900),
+                (768, 1024),
+                (320, 780),
+                (390, 844),
+            ]:
                 await page.set_viewport_size({"width": width, "height": height})
                 for nav in ("studio", "voices", "settings"):
                     await frame.locator(f'[data-page="{nav}"]').click()
+                    overflow = await actual_frame.evaluate(
+                        "Array.from(document.querySelectorAll('body *')).filter(el => el.getBoundingClientRect().right > innerWidth + 1 && el.getBoundingClientRect().width > 0).map(el => ({tag:el.tagName,id:el.id,cls:el.className})).slice(0,8)"
+                    )
                     assert await actual_frame.evaluate(
                         "document.documentElement.scrollWidth <= window.innerWidth"
-                    ), f"Overflow on {nav} at {width}px"
+                    ), f"Overflow on {nav} at {width}px: {overflow}"
                 await frame.locator('[data-page="studio"]').click()
-            await page.screenshot(
-                path=str(screenshot_dir / "studio-mobile.png"), full_page=True
-            )
+            await capture_view("studio-mobile.png")
+            await frame.locator('[data-page="settings"]').click()
+            await capture_view("settings-mobile.png")
+            await frame.locator('[data-page="voices"]').click()
+            await capture_view("voices-official-mobile.png")
+            await frame.locator('[data-page="settings"]').click()
+            await frame.locator("#backend").select_option("local")
+            await frame.locator("#save").click()
+            await frame.locator('[data-page="voices"]').click()
+            await capture_view("voices-local-mobile.png")
+            await page.set_viewport_size({"width": 1440, "height": 1040})
+            await capture_view("voices-local-desktop.png")
+            await frame.locator('[data-page="studio"]').click()
             await page.set_viewport_size({"width": 1440, "height": 1040})
             await page.evaluate(
                 "document.querySelector('iframe').contentWindow.postMessage({channel:'astrbot-plugin-page',kind:'context',context:{isDark:true}}, '*')"

@@ -81,7 +81,7 @@
             kind: "response",
             requestId: message.requestId,
             ok: true,
-            data,
+            data: data?.data ?? data,
           });
         } catch (error) {
           reply({

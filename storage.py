@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import re
 import time
 import uuid
@@ -62,6 +63,19 @@ def playable_audio(data: bytes, fmt: str, rate: int = 24000) -> tuple[bytes, str
     }
     if not signatures.get(extension, False):
         raise BreezeError("服务返回的音频与所选格式不一致，请检查服务类型和输出格式。")
+    if extension in {"wav", "flac", "mp3"}:
+        try:
+            with sf.SoundFile(io.BytesIO(data)) as audio:
+                if (
+                    audio.frames <= 0
+                    or not 1 <= audio.channels <= 2
+                    or not 8000 <= audio.samplerate <= 192000
+                ):
+                    raise ValueError
+        except (RuntimeError, ValueError):
+            raise BreezeError(
+                "服务返回的音频文件损坏或缺少有效采样。", code="audio_format"
+            ) from None
     return data, extension
 
 
@@ -75,6 +89,8 @@ class AudioStore:
         self.items: dict[str, dict] = {}
         if self.index.exists():
             try:
+                if self.index.stat().st_size > 2 * 1024 * 1024:
+                    raise ValueError
                 self.items = json.loads(self.index.read_text(encoding="utf-8"))
                 if not isinstance(self.items, dict):
                     raise ValueError
@@ -82,6 +98,26 @@ class AudioStore:
                     if not isinstance(item, dict) or item.get("id") != key:
                         raise ValueError
                     self.path(key)
+                    if (
+                        item.get("kind") not in {"reference", "output", "preview"}
+                        or item.get("extension") not in MIME
+                        or not isinstance(item.get("name"), str)
+                        or not 1 <= len(item["name"]) <= 120
+                        or type(item.get("size")) is not int
+                        or not 1 <= item["size"] <= AUDIO_LIMIT + 44
+                        or type(item.get("created")) not in {int, float}
+                        or not 0 <= item["created"] <= 10**12
+                        or not item["filename"].endswith("." + item["extension"])
+                    ):
+                        raise ValueError
+                    if item["kind"] == "reference" and (
+                        not isinstance(item.get("ref_text"), str)
+                        or len(item["ref_text"]) > 4000
+                        or type(item.get("duration")) not in {int, float}
+                        or not 0.1 <= item["duration"] <= 120
+                        or type(item.get("sample_rate")) is not int
+                    ):
+                        raise ValueError
             except (ValueError, KeyError, TypeError):
                 raise BreezeError(
                     "音频索引损坏，请备份并检查 audio-index.json，原文件已保留。"
@@ -137,10 +173,16 @@ class AudioStore:
         Returns:
             The saved audio record.
         """
+        if (
+            extension not in MIME
+            or kind not in {"reference", "output", "preview"}
+            or not isinstance(name, str)
+            or not name.strip()
+        ):
+            raise BreezeError("音频名称或格式无效，请重新选择文件。")
         audio_id = uuid.uuid4().hex
         filename = f"{audio_id}.{extension}"
         path = self.root / filename
-        path.write_bytes(data)
         item = {
             "id": audio_id,
             "filename": filename,
@@ -151,11 +193,12 @@ class AudioStore:
             "extension": extension,
             **metadata,
         }
-        self.items[audio_id] = item
         try:
+            path.write_bytes(data)
+            self.items[audio_id] = item
             self.persist()
         except OSError:
-            self.items.pop(audio_id)
+            self.items.pop(audio_id, None)
             path.unlink(missing_ok=True)
             raise
         return dict(item)
@@ -182,12 +225,27 @@ class AudioStore:
                 if audio.format not in {"WAV", "WAVEX", "MP3", "FLAC", "OGG"}:
                     raise BreezeError("请上传 WAV、MP3、FLAC 或 OGG 音频。")
                 duration = audio.frames / audio.samplerate
-                if not 0.1 <= duration <= 120 or audio.channels > 2:
+                if (
+                    not 0.1 <= duration <= 120
+                    or not 1 <= audio.channels <= 2
+                    or not 8000 <= audio.samplerate <= 192000
+                ):
                     raise BreezeError("参考录音须为 0.1–120 秒的单声道或双声道音频。")
+                if (
+                    audio.frames * 2 + 44 > UPLOAD_LIMIT
+                    or audio.frames * audio.channels * 4 > AUDIO_LIMIT
+                ):
+                    raise BreezeError(
+                        "解码后的录音超过大小上限，请缩短录音或降低采样率。"
+                    )
                 # Decode the bounded recording to detect corrupt/truncated uploads.
                 samples = audio.read(dtype="float32", always_2d=True)
                 if len(samples) != audio.frames:
                     raise BreezeError("音频不完整，无法读取全部采样。")
+                if not math.isfinite(float(samples.max())) or not math.isfinite(
+                    float(samples.min())
+                ):
+                    raise BreezeError("录音包含无效采样，请重新导出音频。")
                 normalized = io.BytesIO()
                 sf.write(
                     normalized,
@@ -217,13 +275,19 @@ class AudioStore:
             audio_id: Identifier of the audio to delete.
         """
         path = self.path(audio_id)
+        staged = path.with_suffix(path.suffix + ".delete")
+        if path.exists():
+            path.replace(staged)
         item = self.items.pop(audio_id)
         try:
             self.persist()
+            staged.unlink(missing_ok=True)
         except OSError:
             self.items[audio_id] = item
+            if staged.exists():
+                staged.replace(path)
+            self.persist()
             raise
-        path.unlink(missing_ok=True)
 
     def prune(self, limit: int) -> None:
         """Keep the newest outputs and previews while retaining all references.

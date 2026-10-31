@@ -80,7 +80,13 @@ class BreezeTTS(Star):
                 ]
             )
         except BreezeError as exc:
+            self.logger.warning("Breeze command failed (code=%s).", exc.code)
             yield event.plain_result(str(exc))
+        except Exception as exc:
+            self.logger.error(
+                "Breeze command failed unexpectedly (%s).", type(exc).__name__
+            )
+            yield event.plain_result("语音发送失败，请检查平台连接及音频格式。")
 
     @filter.llm_tool(name="breeze_tts")
     async def breeze_tts(self, event: AstrMessageEvent, text: str):
@@ -94,6 +100,8 @@ class BreezeTTS(Star):
         try:
             item = await self.service.synthesize(text)
             assert self.service.store is not None
+            # A delivery failure must not trigger a second paid generation.
+            event.set_extra("breezetts_voice_sent", True)
             await event.send(
                 MessageChain(
                     [
@@ -103,10 +111,12 @@ class BreezeTTS(Star):
                     ]
                 )
             )
-            event.set_extra("breezetts_voice_sent", True)
             return "Voice message sent. Do not repeat the spoken text."
         except BreezeError as exc:
             return str(exc)
+        except Exception as exc:
+            self.logger.error("Breeze voice tool failed (%s).", type(exc).__name__)
+            return "语音发送失败，请检查平台连接及音频格式。"
 
     @filter.on_decorating_result()
     async def auto_speak(self, event: AstrMessageEvent):
@@ -141,7 +151,13 @@ class BreezeTTS(Star):
                     part for part in result.chain if not isinstance(part, Plain)
                 ]
             result.chain.append(record)
-        except BreezeError:
+        except BreezeError as exc:
             self.logger.warning(
-                "Breeze automatic speech failed; retaining the text reply."
+                "Breeze automatic speech failed (code=%s); retaining the text reply.",
+                exc.code,
+            )
+        except Exception as exc:
+            self.logger.error(
+                "Breeze automatic speech failed (%s); retaining the text reply.",
+                type(exc).__name__,
             )

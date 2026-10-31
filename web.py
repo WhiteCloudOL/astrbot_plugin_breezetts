@@ -26,8 +26,19 @@ def web_errors(handler):
     @wraps(handler)
     async def wrapped(self):
         try:
+            await self.service.start()
             return await handler(self)
         except BreezeError as exc:
+            log = (
+                self.service.logger.debug
+                if exc.code == "validation"
+                else self.service.logger.warning
+            )
+            log(
+                "Breeze Web API rejected request (handler=%s, code=%s).",
+                handler.__name__,
+                exc.code,
+            )
             return error_response(str(exc), status_code=400)
         except (TimeoutError, asyncio.TimeoutError):
             return error_response("请求超时，请稍后重试。", status_code=504)
@@ -210,7 +221,10 @@ class WorkbenchAPI:
     async def audio_chunk(self):
         """Send bounded base64 chunks for playback inside a restricted iframe."""
         await self.service.start()
-        offset = request.query.get("offset", 0, type=int)
+        try:
+            offset = int(request.query.get("offset", "0"))
+        except (TypeError, ValueError):
+            raise BreezeError("音频读取位置须为整数。") from None
         if not 0 <= offset <= 64 * 1024 * 1024:
             raise BreezeError("音频读取位置无效。")
         async with self.service.lock:
@@ -224,11 +238,17 @@ class WorkbenchAPI:
                     source.seek(offset)
                     return source.read(512 * 1024)
 
-            data = await self.service.io(read_chunk)
+            if not path.is_file():
+                raise BreezeError("音频文件不存在，请刷新列表。")
             item = store.items[audio_id]
+            if offset > item["size"]:
+                raise BreezeError("音频读取位置超过文件大小。")
+            if path.stat().st_size != item["size"]:
+                raise BreezeError("音频文件与索引大小不一致，请重新上传或生成。")
+            data = await self.service.io(read_chunk)
             return json_response(
                 {
-                    "data": base64.b64encode(data).decode("ascii"),
+                    "audio_base64": base64.b64encode(data).decode("ascii"),
                     "next": offset + len(data),
                     "eof": offset + len(data) >= item["size"],
                     "mime": MIME[item["extension"]],

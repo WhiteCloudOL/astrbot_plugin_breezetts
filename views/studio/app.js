@@ -12,10 +12,13 @@ let catalog = { voices: [], page: 1, next_page_token: "", has_more: false };
 let catalogFilter;
 let disposed = false;
 let noticeTimer;
+let playbackSequence = 0;
+let settingsSaving = false;
+const clearKeys = new Set();
 const titles = {
-  studio: "让文字，有声音。",
-  voices: "收藏你的声音。",
-  settings: "准备好，开始发声。",
+  studio: "合成试听",
+  voices: "音色管理",
+  settings: "连接设置",
 };
 
 function notice(message, error = false) {
@@ -31,6 +34,7 @@ function notice(message, error = false) {
 
 async function action(button, operation) {
   if (button.disabled) return;
+  const wasDisabled = button.disabled;
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
   try {
@@ -38,7 +42,7 @@ async function action(button, operation) {
   } catch (error) {
     notice(error.message || "操作失败，请稍后重试。", true);
   } finally {
-    button.disabled = button.id === "save" && !dirty;
+    button.disabled = button.id === "save" ? !dirty : wasDisabled;
     button.removeAttribute("aria-busy");
   }
 }
@@ -62,7 +66,7 @@ function navigate(page) {
 function markDirty() {
   dirty = true;
   $("save-state").textContent = "有未保存的更改";
-  $("save").disabled = false;
+  $("save").disabled = settingsSaving;
   updateSummary();
 }
 
@@ -74,6 +78,15 @@ function updateSummary() {
   $("studio-backend").textContent = backendName;
   $("local-settings").hidden = cloud;
   $("cloud-settings").hidden = !cloud;
+  $("local-voices-panel").hidden = cloud;
+  $("cloud-voices-panel").hidden = !cloud;
+  $("voice-page-title").textContent = cloud
+    ? "BreezeBlue 官方音色"
+    : "本地参考音色";
+  $("voice-page-hint").textContent = cloud
+    ? "查询账号音色，或创建克隆与设计音色"
+    : "上传录音、填写准确文字稿，再设为当前音色";
+
   const reference = state.audio.find(
     (item) => item.id === draft.local.reference_id,
   );
@@ -98,7 +111,7 @@ function updateSummary() {
     ? `官方输出 · ${draft.cloud.output_format.toUpperCase()} · ${draft.cloud.delivery}`
     : "本地 PCM 自动封装为 WAV";
   $("text-count").textContent =
-    `${$("synthesis-text").value.length} / ${draft.behavior.max_characters}`;
+    `${Array.from($("synthesis-text").value).length} / ${draft.behavior.max_characters}`;
 }
 
 function fillSettings() {
@@ -113,29 +126,49 @@ function fillSettings() {
     $(`${backend}-key`).placeholder = state.credentials[backend]
       ? "已配置密钥；留空保留，输入新值替换"
       : "尚未配置密钥";
-    $(`clear-${backend}-key`).checked = false;
+
+    $(`clear-${backend}-key`).textContent = "清空";
+    $(`clear-${backend}-key`).disabled = !state.credentials[backend];
+    $(`${backend}-key-state`).textContent = state.credentials[backend]
+      ? "已配置密钥 · 输入新值可替换"
+      : backend === "local"
+        ? "当前未配置密钥 · 自动使用无鉴权连接"
+        : "填写官方开发者 API Key";
   }
   $("save-state").textContent = "配置已保存";
   $("save").disabled = true;
   dirty = false;
+  clearKeys.clear();
   updateSummary();
 }
 
 async function saveSettings() {
+  if (settingsSaving) throw new Error("配置正在保存，请稍候");
   for (const element of document.querySelectorAll("[data-config]")) {
     if (!element.closest("[hidden]") && !element.reportValidity())
-      throw new Error("请检查配置字段的格式和取值范围。");
+      throw new Error("请检查配置字段的格式和取值范围");
   }
-  const clearKeys = ["local", "cloud"].filter(
-    (backend) => $(`clear-${backend}-key`).checked,
-  );
-  state = await bridge.apiPost("settings", {
-    config: draft,
-    clear_keys: clearKeys,
-  });
-  draft = structuredClone(state.config);
-  renderAudio();
-  fillSettings();
+  settingsSaving = true;
+  const snapshot = structuredClone(draft);
+  const cleared = [...clearKeys];
+  try {
+    const saved = await bridge.apiPost("settings", {
+      config: snapshot,
+      clear_keys: cleared,
+    });
+    const editedDuringSave =
+      JSON.stringify(draft) !== JSON.stringify(snapshot) ||
+      JSON.stringify([...clearKeys]) !== JSON.stringify(cleared);
+    state = saved;
+    if (!editedDuringSave) {
+      draft = structuredClone(state.config);
+      fillSettings();
+    } else notice("配置已保存，保存期间的新更改仍待保存");
+    renderAudio();
+    updateSummary();
+  } finally {
+    settingsSaving = false;
+  }
 }
 
 async function refreshAudio() {
@@ -180,40 +213,66 @@ function renderAudio() {
       "还没有参考录音。点击“上传录音”，为本地复刻或官方克隆准备声音。",
     );
   for (const item of references) {
+    const selected = item.id === draft.local.reference_id;
     const card = document.createElement("article");
-    card.className = `reference-card${item.id === draft.local.reference_id ? " selected" : ""}`;
+    card.className = `reference-card${selected ? " selected" : ""}`;
     const title = document.createElement("strong");
     title.textContent = item.name;
     const meta = document.createElement("small");
     meta.textContent = `${item.duration} 秒 · ${item.sample_rate / 1000} kHz · ${(item.size / 1024).toFixed(0)} KiB`;
     const text = document.createElement("p");
-    text.textContent = item.ref_text || "尚未填写文字稿 · 本地复刻前请先编辑";
-    const controls = document.createElement("div");
-    controls.className = "button-row";
-    controls.append(
-      button("试听", () => play(item)),
-      button("下载", () => download(item)),
-      button("编辑", async () => {
-        editingReference = item;
-        $("reference-name").value = item.name;
-        $("reference-text").value = item.ref_text;
-        $("reference-dialog").showModal();
-      }),
-      button(
-        item.id === draft.local.reference_id ? "默认音色 ✓" : "设为本地音色",
-        async () => {
-          if (!item.ref_text)
-            throw new Error("请先编辑此录音并填写准确文字稿。");
-          draft.local.reference_id = item.id;
-          draft.local.mode = "reference";
-          draft.backend = "local";
-          await saveSettings();
-          notice("已保存为默认本地音色。");
-        },
-      ),
-      button("删除", async () => askDelete(item)),
+    text.className = "reference-transcript";
+    text.textContent =
+      item.ref_text || "填写准确文字稿后，即可用于本地音色复刻";
+    const select = button(
+      selected ? "当前音色 ✓" : "设为当前音色",
+      async () => {
+        if (!item.ref_text) {
+          editingReference = item;
+          $("reference-name").value = item.name;
+          $("reference-text").value = "";
+          $("reference-dialog").showModal();
+          notice("先填写录音文字稿，保存后即可设置音色");
+          return;
+        }
+        draft.local.reference_id = item.id;
+        draft.local.mode = "reference";
+        draft.backend = "local";
+        await saveSettings();
+        notice("已保存为当前本地音色");
+      },
+      "primary select-voice",
     );
-    card.append(title, meta, text, controls);
+    select.disabled = selected;
+    const controls = document.createElement("div");
+    controls.className = "reference-actions";
+    controls.append(
+      button("试听", () => play(item), "secondary"),
+      button("下载", () => download(item), "secondary"),
+      button(
+        "编辑信息",
+        async () => {
+          editingReference = item;
+          $("reference-name").value = item.name;
+          $("reference-text").value = item.ref_text;
+          $("reference-dialog").showModal();
+        },
+        "secondary",
+      ),
+    );
+    const footer = document.createElement("div");
+    footer.className = "reference-footer";
+    const transcript = document.createElement("span");
+    transcript.textContent = item.ref_text ? "文字稿已配对" : "待填写文字稿";
+    const remove = button(
+      "删除录音",
+      async () => askDelete(item),
+      "danger-text",
+    );
+    remove.disabled = selected;
+    if (selected) remove.title = "更换当前音色后可删除这条录音";
+    footer.append(transcript, remove);
+    card.append(title, meta, text, select, controls, footer);
     $("references").append(card);
   }
   $("history").replaceChildren();
@@ -239,9 +298,9 @@ function renderAudio() {
     const controls = document.createElement("div");
     controls.className = "audio-actions";
     controls.append(
-      button("试听", () => play(item)),
-      button("下载 ↓", () => download(item)),
-      button("删除", async () => askDelete(item)),
+      button("试听", () => play(item), "secondary"),
+      button("下载", () => download(item), "secondary"),
+      button("删除", async () => askDelete(item), "danger-text"),
     );
     row.append(icon, info, controls);
     $("history").append(row);
@@ -263,37 +322,72 @@ async function download(item) {
   );
 }
 
-async function play(item) {
-  $("player-name").textContent = "正在载入音频……";
+async function play(item, { autoplay = true } = {}) {
+  const sequence = ++playbackSequence;
+  currentAudio = item;
+  if (autoplay) navigate("studio");
+  $("player-name").textContent = item.name;
+  $("player-detail").textContent = "正在载入音频…";
+  $("player-state").textContent = "载入中";
+  $("download-current").disabled = false;
+  $("retry-playback").hidden = true;
+  $("player").pause();
+  $("player").hidden = true;
   const chunks = [];
   let offset = 0;
   let mime;
-  while (!disposed) {
-    const chunk = await bridge.apiGet("audio/chunk", { id: item.id, offset });
-    if (chunk.next < offset || (!chunk.eof && chunk.next === offset))
-      throw new Error("音频读取未完成，请刷新后重试。");
-    chunks.push(
-      Uint8Array.from(atob(chunk.data), (character) => character.charCodeAt(0)),
-    );
-    offset = chunk.next;
-    mime = chunk.mime;
-    if (chunk.eof) break;
+  try {
+    while (!disposed) {
+      const chunk = await bridge.apiGet("audio/chunk", { id: item.id, offset });
+      if (sequence !== playbackSequence) return;
+      if (
+        typeof chunk.audio_base64 !== "string" ||
+        !Number.isSafeInteger(chunk.next) ||
+        chunk.next < offset ||
+        chunk.next > 64 * 1024 * 1024 + 44 ||
+        typeof chunk.eof !== "boolean" ||
+        (!chunk.eof && chunk.next === offset)
+      )
+        throw new Error("音频分块无效");
+      const bytes = Uint8Array.from(atob(chunk.audio_base64), (character) =>
+        character.charCodeAt(0),
+      );
+      if (bytes.length !== chunk.next - offset)
+        throw new Error("音频分块长度不一致");
+      chunks.push(bytes);
+      offset = chunk.next;
+      mime = chunk.mime;
+      if (chunk.eof) break;
+    }
+    if (disposed || sequence !== playbackSequence) return;
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    objectUrl = URL.createObjectURL(new Blob(chunks, { type: mime }));
+    $("player").src = objectUrl;
+    $("player").hidden = false;
+    $("player").load();
+    $("player-detail").textContent =
+      `${item.extension.toUpperCase()} · ${(item.size / 1024).toFixed(0)} KiB`;
+    $("player-state").textContent = "已载入";
+    if (autoplay && matchMedia("(max-width: 900px)").matches)
+      $("player").scrollIntoView({
+        block: "center",
+        behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "auto"
+          : "smooth",
+      });
+    if (autoplay)
+      await $("player")
+        .play()
+        .catch(() => {
+          $("player-state").textContent = "点击播放";
+        });
+  } catch {
+    if (sequence !== playbackSequence || disposed) return;
+    $("player-state").textContent = "载入失败";
+    $("player-detail").textContent = "音频已保存，可重试载入或直接下载";
+    $("retry-playback").hidden = false;
+    throw new Error("试听载入失败，音频仍可下载，请点击“重新载入音频”重试");
   }
-  if (disposed) return;
-  $("player").pause();
-  if (objectUrl) URL.revokeObjectURL(objectUrl);
-  objectUrl = URL.createObjectURL(new Blob(chunks, { type: mime }));
-  $("player").src = objectUrl;
-  $("player-name").textContent = item.name;
-  currentAudio = item;
-  $("download-current").disabled = false;
-  await $("player")
-    .play()
-    .catch(() => {
-      notice("音频已载入，点击播放器开始试听。");
-    });
-  if ($("page-studio").hidden)
-    notice("音频已载入，可在“合成试听”中查看播放器。");
 }
 
 async function runJob(operation, payload, onProgress) {
@@ -343,6 +437,7 @@ async function loadVoices(more = false) {
   for (const voice of catalog.voices) {
     const card = document.createElement("article");
     card.className = "voice-card";
+    card.dataset.voiceId = voice.voice_id;
     const name = document.createElement("strong");
     name.textContent = voice.name;
     const id = document.createElement("small");
@@ -361,11 +456,22 @@ async function loadVoices(more = false) {
           draft.cloud.voice_id = voice.voice_id;
           draft.backend = "cloud";
           await saveSettings();
-          notice(`已选用“${voice.name}”。`);
+          document.querySelectorAll(".voice-card").forEach((entry) => {
+            const selected = entry.dataset.voiceId === voice.voice_id;
+            entry.classList.toggle("selected", selected);
+            const control = entry.querySelector("button");
+            control.disabled = selected;
+            control.textContent = selected ? "当前音色 ✓" : "使用此音色";
+          });
+          notice(`已选用“${voice.name}”`);
         },
-        "secondary",
+        "primary select-voice",
       ),
     );
+    if (voice.voice_id === draft.cloud.voice_id) {
+      card.querySelector("button").disabled = true;
+      card.querySelector("button").textContent = "当前音色 ✓";
+    }
     $("cloud-voices").append(card);
   }
   $("more-voices").hidden = !catalog.has_more;
@@ -382,6 +488,11 @@ if (!bridge) {
     renderAudio();
     fillSettings();
     navigate(location.hash.slice(1) || "studio");
+    const latest = state.audio.find((item) => item.kind === "output");
+    if (latest)
+      play(latest, { autoplay: false }).catch((error) =>
+        notice(error.message, true),
+      );
   } catch (error) {
     notice(error.message || "工作台初始化失败，请重载插件后刷新。", true);
   }
@@ -393,6 +504,14 @@ document
     element.addEventListener("click", () => navigate(element.dataset.page)),
   );
 $("go-voices").addEventListener("click", () => navigate("voices"));
+$("voice-settings").addEventListener("click", () => navigate("settings"));
+$("upload-for-clone").addEventListener("click", () => $("upload").click());
+$("retry-playback").addEventListener("click", () =>
+  action($("retry-playback"), async () => {
+    await play(currentAudio);
+    notice("音频已重新载入");
+  }),
+);
 window.addEventListener("hashchange", () => navigate(location.hash.slice(1)));
 document.querySelectorAll("[data-config]").forEach((element) =>
   element.addEventListener("input", () => {
@@ -409,14 +528,38 @@ document.querySelectorAll("[data-config]").forEach((element) =>
     markDirty();
   }),
 );
-for (const backend of ["local", "cloud"])
-  $(`clear-${backend}-key`).addEventListener("change", markDirty);
+for (const backend of ["local", "cloud"]) {
+  $(`clear-${backend}-key`).addEventListener("click", () => {
+    if (clearKeys.has(backend)) {
+      clearKeys.delete(backend);
+      $(`clear-${backend}-key`).textContent = "清空";
+      $(`${backend}-key-state`).textContent = state.credentials[backend]
+        ? "已配置密钥 · 输入新值可替换"
+        : "当前未配置密钥";
+    } else {
+      clearKeys.add(backend);
+      draft[backend].api_key = "";
+      $(`${backend}-key`).value = "";
+      $(`clear-${backend}-key`).textContent = "撤销清空";
+      $(`${backend}-key-state`).textContent = "密钥已清空 · 保存后生效";
+    }
+    markDirty();
+  });
+  $(`${backend}-key`).addEventListener("input", () => {
+    clearKeys.delete(backend);
+    $(`clear-${backend}-key`).textContent = "清空";
+    $(`clear-${backend}-key`).disabled =
+      !$(`${backend}-key`).value && !state.credentials[backend];
+    $(`${backend}-key-state`).textContent = $(`${backend}-key`).value
+      ? "新密钥待保存"
+      : "留空将保留已保存的密钥";
+  });
+}
 $("synthesis-text").addEventListener("input", updateSummary);
 $("save").addEventListener("click", () =>
   action($("save"), async () => {
     await saveSettings();
     notice("配置已保存。");
-    $("save").disabled = true;
   }),
 );
 $("refresh-audio").addEventListener("click", () =>
@@ -425,14 +568,23 @@ $("refresh-audio").addEventListener("click", () =>
 $("download-current").addEventListener("click", () =>
   action($("download-current"), () => download(currentAudio)),
 );
-$("player").addEventListener("error", () =>
-  notice("浏览器无法播放此格式，可下载文件或将官方输出格式改为 WAV。", true),
-);
+$("player").addEventListener("error", () => {
+  if (!$("player").getAttribute("src")) return;
+  $("player-state").textContent = "播放失败";
+  $("player-detail").textContent =
+    "可下载音频，或将输出格式改为 WAV 后重新生成";
+  $("retry-playback").hidden = false;
+  notice("浏览器无法播放此音频，可下载文件或选择 WAV 格式", true);
+});
+$("player").addEventListener("loadedmetadata", () => {
+  if (Number.isFinite($("player").duration))
+    $("player-state").textContent = `${$("player").duration.toFixed(1)} 秒`;
+});
 $("synthesize").addEventListener("click", () =>
   action($("synthesize"), async () => {
     if (!draft) throw new Error("配置尚未加载，请刷新工作台。");
     const text = $("synthesis-text").value;
-    if (!text.trim() || text.length > draft.behavior.max_characters)
+    if (!text.trim() || Array.from(text).length > draft.behavior.max_characters)
       throw new Error(`请输入 1–${draft.behavior.max_characters} 个字符。`);
     if (dirty) await saveSettings();
     const started = Date.now();
@@ -462,11 +614,16 @@ $("upload").addEventListener("change", async () => {
   try {
     const item = await bridge.upload("audio/upload", file);
     await refreshAudio();
-    editingReference = item;
-    $("reference-name").value = item.name;
-    $("reference-text").value = "";
-    $("reference-dialog").showModal();
-    notice("录音已上传，请填写准确文字稿。");
+    if (draft.backend === "cloud") {
+      $("clone-reference").value = item.id;
+      notice("克隆录音已上传，填写名称和语言即可生成预览");
+    } else {
+      editingReference = item;
+      $("reference-name").value = item.name;
+      $("reference-text").value = "";
+      $("reference-dialog").showModal();
+      notice("录音已上传，请填写准确文字稿");
+    }
   } catch (error) {
     notice(error.message, true);
   } finally {
@@ -501,8 +658,13 @@ $("confirm-delete").addEventListener("click", () =>
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       objectUrl = undefined;
       currentAudio = undefined;
+      playbackSequence += 1;
       $("download-current").disabled = true;
-      $("player-name").textContent = "生成后，在这里试听";
+      $("player-name").textContent = "生成语音或从列表选择音频";
+      $("player-state").textContent = "等待选择音频";
+      $("player-detail").textContent = "音频准备好后即可播放和下载";
+      $("player").hidden = true;
+      $("retry-playback").hidden = true;
     }
     $("delete-dialog").close();
     await refreshAudio();
@@ -529,21 +691,6 @@ $("test-connection").addEventListener("click", () =>
     }
   }),
 );
-for (const [id, url] of [
-  ["preset-local", "http://127.0.0.1:7860"],
-  ["preset-auth", "http://127.0.0.1:7861"],
-]) {
-  $(id).addEventListener("click", () => {
-    draft.local.base_url = url;
-    $("local-url").value = url;
-    if (id === "preset-local") {
-      draft.local.api_key = "";
-      $("local-key").value = "";
-      $("clear-local-key").checked = true;
-    }
-    markDirty();
-  });
-}
 $("voice-search-form").addEventListener("submit", (event) => {
   event.preventDefault();
   action($("sync-voices"), () => loadVoices());
@@ -574,7 +721,9 @@ $("preview-form").addEventListener("submit", (event) => {
     });
     $("preview-message").textContent = preview.requires_verification
       ? `此音色需在官方控制台完成验证。预览 ID：${preview.preview_id}`
-      : `“${preview.name}”预览已生成。请先试听，再保存到官方账号。`;
+      : preview.audio_unavailable
+        ? `“${preview.name}”预览已创建，可保存到官方账号；试听音频可在官方控制台查看`
+        : `“${preview.name}”预览已生成，请先试听，再保存到官方账号`;
     $("save-preview").hidden = preview.requires_verification;
     $("play-preview").hidden = !preview.audio;
     $("preview-result").hidden = false;
@@ -586,12 +735,17 @@ $("play-preview").addEventListener("click", () =>
 );
 $("save-preview").addEventListener("click", () =>
   action($("save-preview"), async () => {
-    const saved = await bridge.apiPost("voices/save-preview", {
-      preview_id: preview.preview_id,
-      name: preview.name,
-      language_code: preview.language_code,
-    });
-    draft.cloud.voice_id = saved.voice_id;
+    if (!preview.saved_voice_id) {
+      const saved = await bridge.apiPost("voices/save-preview", {
+        preview_id: preview.preview_id,
+        name: preview.name,
+        language_code: preview.language_code,
+      });
+      preview.saved_voice_id = saved.voice_id;
+      $("preview-message").textContent = `音色已保存 · ${saved.voice_id}`;
+      $("save-preview").textContent = "设为当前音色";
+    }
+    draft.cloud.voice_id = preview.saved_voice_id;
     await saveSettings();
     $("preview-result").hidden = true;
     notice("音色已保存并设为当前官方音色。");

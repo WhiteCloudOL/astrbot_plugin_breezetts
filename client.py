@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 import aiohttp
 
-from .settings import BreezeError, api_root
+from .settings import BreezeError, api_root, validate_identifier
 from .storage import AUDIO_LIMIT, playable_audio
 
 
@@ -19,9 +19,12 @@ class BreezeClient:
 
     def __init__(self):
         self.session: aiohttp.ClientSession | None = None
+        self.closed = False
 
     async def start(self) -> None:
         """Acquire the plugin-owned HTTP session in the running event loop."""
+        if self.closed:
+            raise BreezeError("插件连接已关闭，请重载插件后重试。", code="closed")
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=1800, connect=15),
@@ -30,6 +33,7 @@ class BreezeClient:
 
     async def close(self) -> None:
         """Close the session; repeated or partial shutdown is safe."""
+        self.closed = True
         if self.session is not None:
             await self.session.close()
 
@@ -87,7 +91,10 @@ class BreezeClient:
                     message = messages.get(
                         response.status, "服务未成功处理请求，请检查参数或服务端日志。"
                     )
-                    raise BreezeError(f"HTTP {response.status}：{message}")
+                    raise BreezeError(
+                        f"HTTP {response.status}：{message}",
+                        code=f"upstream_http_{response.status}",
+                    )
                 limit = AUDIO_LIMIT if raw else max_json_bytes
                 data = bytearray()
                 async for chunk in response.content.iter_chunked(65536):
@@ -103,7 +110,8 @@ class BreezeClient:
         except (aiohttp.ClientError, TimeoutError, asyncio.TimeoutError):
             # Never include upstream exception strings: they can contain URLs or keys.
             raise BreezeError(
-                "连接失败、超时或音频流中断，请检查服务是否启动及网络连接。"
+                "连接失败、超时或音频流中断，请检查服务是否启动及网络连接。",
+                code="transport",
             ) from None
 
     async def synthesize(
@@ -124,6 +132,10 @@ class BreezeClient:
         """
         if config["backend"] == "local":
             connection = config["local"]
+            if not connection["instruction"].strip() and connection["cfg_scale"] != 1:
+                raise BreezeError(
+                    "普通朗读与纯音色复刻请将 CFG 设为 1；使用更高 CFG 时请填写声音或语气描述。"
+                )
             form = aiohttp.FormData()
             for key, value in {
                 "text": text,
@@ -188,10 +200,15 @@ class BreezeClient:
         if status == 202:
             try:
                 job_id = json.loads(raw)["generation_job_id"]
-                if not isinstance(job_id, str) or not 1 <= len(job_id) <= 200:
+                if (
+                    not isinstance(job_id, str)
+                    or not 1 <= len(job_id) <= 200
+                    or job_id in {".", ".."}
+                ):
                     raise ValueError
             except (ValueError, KeyError, TypeError):
                 raise BreezeError("官方服务未返回有效的后台任务 ID。") from None
+            validate_identifier(job_id, "后台任务 ID", 200)
             path = "generation-jobs/" + quote(job_id, safe="")
             while True:
                 job = await self.request(connection, "GET", path)
@@ -207,7 +224,12 @@ class BreezeClient:
                         params={"output_format": connection["output_format"]},
                     )
                     break
-                if state not in {"queued", "pending", "running", "processing"}:
+                if not isinstance(state, str) or state not in {
+                    "queued",
+                    "pending",
+                    "running",
+                    "processing",
+                }:
                     raise BreezeError(
                         "官方后台任务未成功完成，请在官方控制台查看详情。"
                     )
@@ -260,6 +282,9 @@ class BreezeClient:
                 or not isinstance(item.get("name"), str)
             ):
                 raise BreezeError("官方音色缺少有效名称或 ID。")
+            validate_identifier(item["voice_id"], "音色 ID")
+            if not 1 <= len(item["name"]) <= 120:
+                raise BreezeError("官方音色名称无效。")
             voices.append(
                 {
                     "voice_id": item["voice_id"],
@@ -339,6 +364,9 @@ class BreezeClient:
             try:
                 item = result["previews"][0]
                 preview_id = item["generated_voice_id"]
+            except (KeyError, IndexError, TypeError):
+                raise BreezeError("官方声音设计预览响应无效。") from None
+            try:
                 encoded = item["audio_base_64"]
                 if (
                     not isinstance(encoded, str)
@@ -346,8 +374,8 @@ class BreezeClient:
                 ):
                     raise ValueError
                 audio = playable_audio(base64.b64decode(encoded, validate=True), "wav")
-            except (ValueError, KeyError, IndexError, TypeError):
-                raise BreezeError("官方声音设计预览或音频无效。") from None
+            except (ValueError, KeyError, TypeError):
+                audio = None
             verification = False
         if (
             not isinstance(preview_id, str)
@@ -355,13 +383,18 @@ class BreezeClient:
             or type(verification) is not bool
         ):
             raise BreezeError("官方预览 ID 或验证状态无效。")
+        validate_identifier(preview_id, "音色预览 ID", 200)
         if recording is not None and not verification:
-            raw, _, _ = await self.request(
-                connection,
-                "GET",
-                "voice-previews/" + quote(preview_id, safe="") + "/stream",
-                raw=True,
-                params={"output_format": "wav"},
-            )
-            audio = playable_audio(raw, "wav")
+            try:
+                raw, _, _ = await self.request(
+                    connection,
+                    "GET",
+                    "voice-previews/" + quote(preview_id, safe="") + "/stream",
+                    raw=True,
+                    params={"output_format": "wav"},
+                )
+                audio = playable_audio(raw, "wav")
+            except BreezeError:
+                # Preserve the paid preview identity when only audition fails.
+                audio = None
         return preview_id, verification, audio
