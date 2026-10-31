@@ -512,7 +512,10 @@ $("retry-playback").addEventListener("click", () =>
     notice("音频已重新载入");
   }),
 );
-window.addEventListener("hashchange", () => navigate(location.hash.slice(1)));
+window.addEventListener("hashchange", () => {
+  const page = location.hash.slice(1);
+  if (titles[page]) navigate(page);
+});
 document.querySelectorAll("[data-config]").forEach((element) =>
   element.addEventListener("input", () => {
     if (!draft) return;

@@ -405,6 +405,11 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             assert await frame.locator(".brand-icon").evaluate(
                 "image => image.naturalWidth > 0"
             )
+            skip = frame.get_by_role("link", name="跳到主要内容")
+            await skip.focus()
+            await skip.press("Enter")
+            await expect(frame.locator("#main-content")).to_be_focused()
+
             await frame.get_by_role("button", name="音色与录音").click()
             await frame.locator("#upload").set_input_files(
                 {"name": "试听录音.wav", "mimeType": "audio/wav", "buffer": wav_audio}
