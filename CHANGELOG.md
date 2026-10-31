@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.2.0 — 2026-10-31
+
+- Add private/group probability overrides with inherited defaults and a shared per-conversation cooldown for random and autonomous speech.
+- Reserve in-flight generation across concurrent turns, release failed attempts, and bound cooldown records in memory.
+- Keep explicit commands and same-turn passages available, with responsive settings and usage documentation.
+- Credit the speech-frequency design inspiration from [astrbot_plugin_private_companion](https://github.com/menglimi/astrbot_plugin_private_companion).
+
 ## v1.1.0 — 2026-10-31
 
 - Replace whole-reply automatic synthesis with probability-based, model-selected spoken passages; rename Automatic Reply Speech to Random Speech and Allow LLM Speech Tool to Autonomous LLM Speech in Chat & Runtime.

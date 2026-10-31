@@ -10,9 +10,11 @@ from dataclasses import dataclass, field
 
 from astrbot.api.event import MessageChain
 from astrbot.api.message_components import Plain, Record
+from astrbot.core.platform.message_type import MessageType
 
 from .settings import BreezeError
 from .speech_markup import ENCODED_TAG, TAG, parse_speech
+from .speech_policy import SpeechFrequency
 
 TURN_KEY = "breezetts_speech_turn"
 MAX_SPANS = 4
@@ -24,6 +26,8 @@ class SpeechTurn:
 
     random_selected: bool
     autonomous: bool
+    session: str = ""
+    token: object = field(default_factory=object)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     attempted: set[str] = field(default_factory=set)
     source: str = ""
@@ -37,6 +41,7 @@ class SpeechDelivery:
     def __init__(self, service, logger):
         self.service = service
         self.logger = logger
+        self.frequency = SpeechFrequency()
 
     def turn(self, event) -> SpeechTurn:
         """Make one probability decision and reuse it throughout an event.
@@ -50,12 +55,29 @@ class SpeechDelivery:
         state = event.get_extra(TURN_KEY)
         if state is None:
             behavior = self.service.settings()["behavior"]
+            probability = behavior["trigger_probability"]
+            scope = event.get_message_type()
+            override = (
+                behavior["group_trigger_probability"]
+                if scope == MessageType.GROUP_MESSAGE
+                else behavior["private_trigger_probability"]
+                if scope == MessageType.FRIEND_MESSAGE
+                else -1
+            )
+            if override >= 0:
+                probability = override
             state = SpeechTurn(
-                bool(
-                    behavior["auto_tts"]
-                    and random.random() < behavior["trigger_probability"] / 100
-                ),
+                False,
                 behavior["tool_enabled"],
+                session=str(event.unified_msg_origin or ""),
+            )
+            state.random_selected = bool(
+                behavior["auto_tts"]
+                and probability > 0
+                and self.frequency.can_speak(
+                    state.session, state.token, behavior["min_interval_seconds"]
+                )
+                and (probability == 100 or random.random() < probability / 100)
             )
             event.set_extra(TURN_KEY, state)
         return state
@@ -87,14 +109,20 @@ class SpeechDelivery:
                 return "This turn's voice has already been handled. Continue with ordinary text."
             if len(state.attempted) >= MAX_SPANS:
                 return "The speech limit for this turn has been reached. Continue with ordinary text."
+            if not self.frequency.acquire(
+                state.session, state.token, config["behavior"]["min_interval_seconds"]
+            ):
+                return "Speech is cooling down or another reply is generating voice. Continue with ordinary text."
             state.attempted.add(key)
             state.source = "tool"
             audio_ids = set()
             delivered = False
+            generated = False
             try:
                 item = await self.service.synthesize(
                     text, config=config, for_delivery=True
                 )
+                generated = True
                 audio_ids.add(item["id"])
                 assert self.service.store is not None
                 chain = [
@@ -118,6 +146,7 @@ class SpeechDelivery:
                     return "Voice message sent; its text caption could not be delivered. Continue with ordinary text."
                 return "Voice delivery failed. Reply with the passage as ordinary text."
             finally:
+                self.frequency.finish(state.session, state.token, generated)
                 await self.service.release_audio(audio_ids)
 
     async def decorate(self, event) -> None:
@@ -216,13 +245,22 @@ class SpeechDelivery:
                 ):
                     chain.append(component)
                     continue
+                if not self.frequency.acquire(
+                    state.session,
+                    state.token,
+                    config["behavior"]["min_interval_seconds"],
+                ):
+                    chain.append(component)
+                    continue
                 state.attempted.add(key)
                 state.source = "tags"
                 spoken += 1
+                generated = False
                 try:
                     item = await self.service.synthesize(
                         text, config=config, for_delivery=True
                     )
+                    generated = True
                     state.audio_ids.add(item["id"])
                     assert self.service.store is not None
                     chain.append(
@@ -244,4 +282,6 @@ class SpeechDelivery:
                         type(exc).__name__,
                     )
                     chain.append(component)
+                finally:
+                    self.frequency.finish(state.session, state.token, generated)
             result.chain[:] = chain

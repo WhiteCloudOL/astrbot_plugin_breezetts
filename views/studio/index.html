@@ -37,7 +37,7 @@
         <div class="sidebar-bottom">
           <span class="status-dot"></span
           ><span id="backend-label">本地 API</span
-          ><small>清蒸云鸭 · v1.1.0<br />AGPL-3.0</small>
+          ><small>清蒸云鸭 · v1.2.0<br />AGPL-3.0</small>
         </div>
       </aside>
       <main id="main-content" tabindex="-1">
@@ -523,6 +523,34 @@
               <label for="trigger-probability">随机触发概率（%）</label>
               <input id="trigger-probability" data-config="behavior.trigger_probability" type="number" min="0" max="100" step="1" />
               <small>默认 20%，每轮抽取一次；可与 LLM 自主语音一起开启</small>
+              <div class="form-grid">
+                <div>
+                  <label for="private-probability-mode">私聊随机概率</label>
+                  <select id="private-probability-mode" data-probability-scope="private">
+                    <option value="inherit">跟随默认概率</option>
+                    <option value="custom">单独设置概率</option>
+                  </select>
+                  <div id="private-probability-field" hidden>
+                    <label for="private-trigger-probability">私聊概率（%）</label>
+                    <input id="private-trigger-probability" data-config="behavior.private_trigger_probability" type="number" min="-1" max="100" step="1" />
+                  </div>
+                </div>
+                <div>
+                  <label for="group-probability-mode">群聊随机概率</label>
+                  <select id="group-probability-mode" data-probability-scope="group">
+                    <option value="inherit">跟随默认概率</option>
+                    <option value="custom">单独设置概率</option>
+                  </select>
+                  <div id="group-probability-field" hidden>
+                    <label for="group-trigger-probability">群聊概率（%）</label>
+                    <input id="group-trigger-probability" data-config="behavior.group_trigger_probability" type="number" min="-1" max="100" step="1" />
+                  </div>
+                </div>
+              </div>
+              <small>单独设为 0% 可关闭该场景的随机语音，LLM 仍可自主调用语音工具</small>
+              <label for="speech-min-interval">会话语音最小间隔（秒）</label>
+              <input id="speech-min-interval" data-config="behavior.min_interval_seconds" type="number" min="0" max="3600" step="1" />
+              <small>默认 90 秒；随机语音与 LLM 工具共享间隔，同轮片段可连续发送，设为 0 可关闭间隔</small>
               <label class="switch-row">
                 <span>保留朗读片段文字</span>
                 <input data-config="behavior.keep_text" type="checkbox" role="switch" class="switch" />

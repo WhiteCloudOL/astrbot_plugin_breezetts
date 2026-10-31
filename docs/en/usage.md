@@ -34,6 +34,10 @@ In Connection & Settings → Chat & Runtime, enable random speech and choose its
 
 The former automatic-reply speech option is now Random Speech, and Allow LLM Speech Tool is now Autonomous LLM Speech. Both remain in Chat & Runtime
 
+Private and group conversations can inherit the default probability or use separate values. The conversation interval defaults to 90 seconds and is shared by random speech and LLM tool calls. Different passages in one turn can follow one another; setting the interval to zero disables the cooldown
+
+![Mobile speech settings](../images/settings-mobile.png)
+
 Generated audio and previews have configurable count and capacity limits, defaulting to 50 files and 256 MiB. Reference recordings are retained separately
 
 ![Mobile workbench](../images/studio-mobile.png)

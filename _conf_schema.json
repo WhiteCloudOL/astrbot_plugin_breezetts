@@ -182,6 +182,24 @@
         "hint": "0–100，每轮只抽取一次；命中后由模型选择适合朗读的片段。",
         "default": 20
       },
+      "private_trigger_probability": {
+        "type": "int",
+        "description": "私聊随机触发概率（%）",
+        "hint": "-1 跟随默认概率，0–100 单独设置；仅控制随机语音。",
+        "default": -1
+      },
+      "group_trigger_probability": {
+        "type": "int",
+        "description": "群聊随机触发概率（%）",
+        "hint": "-1 跟随默认概率，0–100 单独设置；仅控制随机语音。",
+        "default": -1
+      },
+      "min_interval_seconds": {
+        "type": "int",
+        "description": "会话语音最小间隔（秒）",
+        "hint": "0–3600，随机语音和 LLM 工具共享间隔；同轮内的不同片段可连续发送。",
+        "default": 90
+      },
       "keep_text": {
         "type": "bool",
         "description": "保留朗读片段文字",

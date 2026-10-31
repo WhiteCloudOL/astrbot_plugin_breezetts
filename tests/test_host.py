@@ -277,6 +277,7 @@ async def test_real_message_command_and_auto_reply(loaded_plugin, server, caplog
     _, _, metadata = loaded_plugin
     plugin = metadata.star_cls
     plugin.config["local"].update(base_url=await server(handle), mode="plain")
+    plugin.config["behavior"]["min_interval_seconds"] = 0
     message = AstrBotMessage()
     message.type = MessageType.FRIEND_MESSAGE
     message.sender = MessageMember("user", "User")
@@ -547,6 +548,12 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             ).to_be_checked()
             await expect(frame.locator("#trigger-probability")).to_be_enabled()
             await frame.locator("#trigger-probability").fill("35")
+            await frame.locator("#private-probability-mode").select_option("custom")
+            await expect(frame.locator("#private-probability-field")).to_be_visible()
+            await frame.locator("#private-trigger-probability").fill("30")
+            await frame.locator("#group-probability-mode").select_option("custom")
+            await frame.locator("#group-trigger-probability").fill("10")
+            await frame.locator("#speech-min-interval").fill("120")
             await frame.locator("#history-max-mb").fill("128")
             await frame.locator('[data-config="behavior.auto_tts"]').uncheck()
             await expect(frame.locator("#trigger-probability")).to_be_disabled()
@@ -558,11 +565,22 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await expect(frame.locator("#save-state")).to_have_text("配置已保存")
             assert plugin.config["cloud"]["api_key"] == ""
             assert plugin.config["behavior"]["trigger_probability"] == 35
+            assert plugin.config["behavior"]["private_trigger_probability"] == 30
+            assert plugin.config["behavior"]["group_trigger_probability"] == 10
+            assert plugin.config["behavior"]["min_interval_seconds"] == 120
+            await expect(frame.locator("#group-probability-mode")).to_have_value(
+                "custom"
+            )
             assert plugin.config["behavior"]["history_max_mb"] == 128
             await expect(frame.locator("#cache-usage")).to_contain_text("MiB")
             await frame.locator("#cloud-key").fill("browser-test-key")
+            await frame.locator('[data-config="behavior.auto_tts"]').check()
+            await frame.locator("#group-probability-mode").select_option("inherit")
+            await expect(frame.locator("#group-probability-field")).to_be_hidden()
+            await frame.locator('[data-config="behavior.auto_tts"]').uncheck()
             await frame.locator("#save").click()
             await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            assert plugin.config["behavior"]["group_trigger_probability"] == -1
 
             await expect(frame.locator("#cloud-key")).to_have_attribute(
                 "placeholder", "已配置密钥；留空保留，输入新值替换"
@@ -605,6 +623,10 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
 
             await page.route("**/settings", fail_settings)
             await frame.locator("#save-preview").click()
+            await expect(frame.locator("#notice")).to_contain_text(
+                "Temporary save failure"
+            )
+            await expect(frame.locator("#save-preview")).to_be_enabled()
             await expect(frame.locator("#save-preview")).to_have_text("设为当前音色")
             await page.unroute("**/settings", fail_settings)
             await frame.locator("#save-preview").click()

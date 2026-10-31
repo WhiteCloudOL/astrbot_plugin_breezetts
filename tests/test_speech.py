@@ -35,16 +35,18 @@ class CapturedEvent(AstrMessageEvent):
 
 @pytest.fixture
 def event_factory():
-    def make(text="Say hello"):
+    def make(
+        text="Say hello", message_type=MessageType.FRIEND_MESSAGE, session="session"
+    ):
         message = AstrBotMessage()
-        message.type = MessageType.FRIEND_MESSAGE
+        message.type = message_type
         message.sender = MessageMember("user", "User")
         message.message = [Plain(text)]
         message.message_str = text
         message.message_id = "test-message"
         message.self_id = "bot"
         event = CapturedEvent(
-            text, message, PlatformMetadata("test", "test", "test"), "session"
+            text, message, PlatformMetadata("test", "test", "test"), session
         )
         event.sent = []
         event.plugins_name = ["astrbot_plugin_breezetts"]
@@ -67,7 +69,7 @@ async def speech_plugin(loaded_plugin, server):  # noqa: F811
     plugin = metadata.star_cls
     plugin.config["local"].update(base_url=await server(upstream), mode="plain")
     plugin.config["behavior"].update(
-        auto_tts=True, trigger_probability=100, keep_text=False
+        auto_tts=True, trigger_probability=100, keep_text=False, min_interval_seconds=0
     )
     host = copy.deepcopy(DEFAULT_CONFIG)
     host.update(t2i=False)
@@ -458,3 +460,157 @@ async def test_disabled_and_over_limit_tags_are_clean_text(
     )
     await plugin.auto_speak(event)
     assert event.get_result().get_plain_text() == "超过上限" and calls == []
+
+
+@pytest.mark.parametrize(
+    "message_type,expected",
+    [
+        (MessageType.FRIEND_MESSAGE, True),
+        (MessageType.GROUP_MESSAGE, False),
+        (MessageType.OTHER_MESSAGE, False),
+    ],
+)
+async def test_private_group_probability_and_default(
+    speech_plugin, event_factory, message_type, expected
+):
+    plugin, _, _ = speech_plugin
+    plugin.config["behavior"].update(
+        trigger_probability=20,
+        private_trigger_probability=70,
+        group_trigger_probability=5,
+    )
+    event = event_factory(message_type=message_type)
+    with patch("random.random", return_value=0.4) as draw:
+        await plugin.prepare_speech(event)
+        request = ProviderRequest()
+        await plugin.prepare_speech_request(event, request)
+        await plugin.prepare_speech_request(event, request)
+    assert draw.call_count == 1
+    assert bool(request.extra_user_content_parts) is expected
+
+
+@pytest.mark.parametrize("probability,selected", [(0, False), (100, True)])
+async def test_scope_probability_boundaries_do_not_draw(
+    speech_plugin, event_factory, probability, selected
+):
+    plugin, _, _ = speech_plugin
+    plugin.config["behavior"]["private_trigger_probability"] = probability
+    with patch("random.random") as draw:
+        state = plugin.speech.turn(event_factory())
+    assert state.random_selected is selected
+    draw.assert_not_called()
+
+
+async def test_cooldown_shared_by_tool_and_random_preserves_text(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"]["min_interval_seconds"] = 90
+    first = event_factory()
+    assert "sent" in await plugin.breeze_tts(first, "第一句")
+    # Distinct passages in the same turn remain available to the model.
+    assert "sent" in await plugin.breeze_tts(first, "第二句")
+    second = event_factory()
+    request = ProviderRequest(system_prompt="Stable persona")
+    await plugin.prepare_speech_request(second, request)
+    assert (
+        request.extra_user_content_parts == []
+        and request.system_prompt == "Stable persona"
+    )
+    assert "cooling down" in await plugin.breeze_tts(second, "第三句")
+    second.set_result(
+        MessageEventResult(
+            chain=[Plain("前<tts>第三句</tts>后")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(second)
+    assert all(isinstance(part, Plain) for part in second.get_result().chain)
+    assert "".join(part.text for part in second.get_result().chain) == "前第三句后"
+    assert calls == ["第一句", "第二句"]
+    other = event_factory(session="other-session")
+    assert "sent" in await plugin.breeze_tts(other, "独立会话")
+    assert calls[-1] == "独立会话"
+
+
+async def test_pending_turn_blocks_concurrent_generation_and_cancellation_releases(
+    speech_plugin, event_factory, monkeypatch
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"]["min_interval_seconds"] = 90
+    original = plugin.service.synthesize
+    entered = asyncio.Event()
+
+    async def waiting(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(plugin.service, "synthesize", waiting)
+    task = asyncio.create_task(plugin.breeze_tts(event_factory(), "处理中"))
+    await entered.wait()
+    assert "cooling down" in await plugin.breeze_tts(event_factory(), "另一轮")
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert plugin.speech.frequency.sessions == {} and calls == []
+    monkeypatch.setattr(plugin.service, "synthesize", original)
+    assert "sent" in await plugin.breeze_tts(event_factory(), "恢复发送")
+    assert calls == ["恢复发送"]
+
+
+async def test_failed_synthesis_allows_next_turn(
+    speech_plugin, event_factory, monkeypatch
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"]["min_interval_seconds"] = 90
+    original = plugin.service.synthesize
+    monkeypatch.setattr(
+        plugin.service,
+        "synthesize",
+        AsyncMock(side_effect=RuntimeError("isolated failure")),
+    )
+    assert "failed" in await plugin.breeze_tts(event_factory(), "失败")
+    assert plugin.speech.frequency.sessions == {}
+    monkeypatch.setattr(plugin.service, "synthesize", original)
+    assert "sent" in await plugin.breeze_tts(event_factory(), "恢复")
+    assert calls == ["恢复"]
+
+
+async def test_random_generation_cools_down_tool_calls(speech_plugin, event_factory):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"]["min_interval_seconds"] = 90
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("前<breeze_tts>随机片段</breeze_tts>后")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    assert sum(isinstance(part, Record) for part in event.get_result().chain) == 1
+    assert "cooling down" in await plugin.breeze_tts(event_factory(), "工具片段")
+    assert calls == ["随机片段"]
+    await plugin.release_speech_audio(event)
+
+
+async def test_platform_failure_keeps_generated_audio_cooldown(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"]["min_interval_seconds"] = 90
+    event = event_factory()
+    event.send = AsyncMock(side_effect=RuntimeError("isolated platform failure"))
+    assert "delivery failed" in await plugin.breeze_tts(event, "已生成")
+    assert "cooling down" in await plugin.breeze_tts(event_factory(), "立即重试")
+    assert calls == ["已生成"]
+
+
+async def test_explicit_command_can_speak_during_cooldown(speech_plugin, event_factory):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"]["min_interval_seconds"] = 90
+    await plugin.breeze_tts(event_factory(), "自动语音")
+    event = event_factory("breezetts 手动请求")
+    results = [result async for result in plugin.speak(event)]
+    assert isinstance(results[0].chain[0], Record)
+    assert calls == ["自动语音", "手动请求"]
+    await plugin.release_speech_audio(event)

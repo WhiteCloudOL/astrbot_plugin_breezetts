@@ -76,6 +76,14 @@ function updateSummary() {
   const cacheMiB = generated.reduce((total, item) => total + item.size, 0) / 1024 / 1024;
   $("cache-usage").textContent = `当前成品与预览：${generated.length} 条 · ${cacheMiB.toFixed(1)} MiB`;
   $("trigger-probability").disabled = !draft.behavior.auto_tts;
+  for (const scope of ["private", "group"]) {
+    const inherit = draft.behavior[`${scope}_trigger_probability`] < 0;
+    $(`${scope}-probability-mode`).value = inherit ? "inherit" : "custom";
+    $(`${scope}-probability-mode`).disabled = !draft.behavior.auto_tts;
+    $(`${scope}-probability-field`).hidden = inherit;
+    $(`${scope}-trigger-probability`).disabled = !draft.behavior.auto_tts;
+    $(`${scope}-trigger-probability`).min = inherit ? "-1" : "0";
+  }
   const cloud = draft.backend === "cloud";
   const backendName = cloud ? "BreezeBlue 官方" : "本地 API";
   $("backend-label").textContent = backendName;
@@ -532,6 +540,16 @@ document.querySelectorAll("[data-config]").forEach((element) =>
           : element.value;
     if (parts.length === 1) draft[parts[0]] = value;
     else draft[parts[0]][parts[1]] = value;
+    markDirty();
+  }),
+);
+document.querySelectorAll("[data-probability-scope]").forEach((element) =>
+  element.addEventListener("change", () => {
+    if (!draft) return;
+    const scope = element.dataset.probabilityScope;
+    const value = element.value === "inherit" ? -1 : draft.behavior.trigger_probability;
+    draft.behavior[`${scope}_trigger_probability`] = value;
+    $(`${scope}-trigger-probability`).value = value;
     markDirty();
   }),
 );
