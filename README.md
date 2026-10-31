@@ -29,6 +29,8 @@ https://github.com/WhiteCloudOL/astrbot_plugin_breezetts
 
 安装后打开 **插件 → BreezeTTS → BreezeTTS 工作台**。工作台包含“合成试听”“音色与录音”“连接与设置”三个入口
 
+更新插件后，在插件管理中重载 BreezeTTS，再刷新工作台，使页面与运行中的插件同步
+
 ## 配置本地 API
 
 1. 在“连接与设置”选择 **本地 API**

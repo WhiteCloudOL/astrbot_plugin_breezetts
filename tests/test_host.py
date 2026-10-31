@@ -96,6 +96,38 @@ async def test_load_reload_and_resources(loaded_plugin):
     assert len(handlers) == 9
 
 
+async def test_reload_upgrades_saved_behavior_settings(loaded_plugin):
+    manager, context, metadata = loaded_plugin
+    first = metadata.star_cls
+    legacy = copy.deepcopy(dict(first.config))
+    legacy["local"]["api_key"] = "upgrade-test-local-key"
+    legacy["behavior"].update(auto_tts=True, trigger_probability=25)
+    for key in (
+        "private_trigger_probability",
+        "group_trigger_probability",
+        "min_interval_seconds",
+    ):
+        legacy["behavior"].pop(key)
+    config_path = Path(first.config.config_path)
+    config_path.write_text(json.dumps(legacy), encoding="utf-8-sig")
+
+    ok, error = await manager.reload(metadata.name)
+    assert ok, error
+    plugin = context.get_registered_star(metadata.name).star_cls
+    snapshot = await plugin.service.state()
+    behavior = snapshot["config"]["behavior"]
+    assert behavior["auto_tts"] and behavior["trigger_probability"] == 25
+    assert behavior["private_trigger_probability"] == -1
+    assert behavior["group_trigger_probability"] == -1
+    assert behavior["min_interval_seconds"] == 90
+    behavior["group_trigger_probability"] = 10
+    await plugin.service.save_settings(snapshot["config"], [])
+    saved = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    assert saved["behavior"]["group_trigger_probability"] == 10
+    assert saved["local"]["api_key"] == "upgrade-test-local-key"
+    assert len(context.registered_web_apis) == 12
+
+
 @pytest.fixture
 async def host_http(loaded_plugin):
     import httpx
@@ -437,8 +469,25 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             )
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
+
+            async def legacy_state(route):
+                response = await route.fetch()
+                payload = await response.json()
+                payload["config"]["behavior"].pop("min_interval_seconds")
+                await route.fulfill(response=response, json=payload)
+
+            await page.route("**/state", legacy_state)
             await page.goto(f"http://127.0.0.1:{listener.getsockname()[1]}")
             frame = page.frame_locator("iframe")
+            await expect(frame.locator("#notice")).to_contain_text(
+                "在插件管理中重载 BreezeTTS"
+            )
+            await expect(frame.locator("#save")).to_be_disabled()
+            await expect(frame.locator("#synthesize")).to_be_disabled()
+            await expect(frame.locator("#test-connection")).to_be_disabled()
+            assert plugin.config["behavior"]["min_interval_seconds"] == 90
+            await page.unroute("**/state", legacy_state)
+            await page.reload()
             await expect(frame.locator("#save-state")).to_have_text("配置已保存")
             assert await frame.locator(".brand-icon").evaluate(
                 "image => image.naturalWidth > 0"
@@ -553,6 +602,10 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await frame.locator("#private-trigger-probability").fill("30")
             await frame.locator("#group-probability-mode").select_option("custom")
             await frame.locator("#group-trigger-probability").fill("10")
+            await frame.locator("#speech-min-interval").fill("")
+            await frame.locator("#save").click()
+            await expect(frame.locator("#notice")).to_contain_text("取值范围")
+            assert plugin.config["behavior"]["min_interval_seconds"] == 90
             await frame.locator("#speech-min-interval").fill("120")
             await frame.locator("#history-max-mb").fill("128")
             await frame.locator('[data-config="behavior.auto_tts"]').uncheck()

@@ -496,6 +496,13 @@ if (!bridge) {
   try {
     await bridge.ready();
     state = await bridge.apiGet("state");
+    if ([...document.querySelectorAll("[data-config]")].some((element) => {
+      const [group, key] = element.dataset.config.split(".");
+      const section = key ? state.config?.[group] : state.config;
+      return !section || !Object.hasOwn(section, key || group);
+    })) {
+      throw new Error("插件文件已更新，请在插件管理中重载 BreezeTTS，再刷新工作台");
+    }
     draft = structuredClone(state.config);
     renderAudio();
     fillSettings();
@@ -506,6 +513,8 @@ if (!bridge) {
         notice(error.message, true),
       );
   } catch (error) {
+    document.querySelectorAll("main button, main input, main select, main textarea")
+      .forEach((element) => { element.disabled = true; });
     notice(error.message || "工作台初始化失败，请重载插件后刷新。", true);
   }
 }

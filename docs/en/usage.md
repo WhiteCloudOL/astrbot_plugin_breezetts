@@ -2,6 +2,8 @@
 
 Open BreezeTTS from the AstrBot plugin details page. The interface is in Simplified Chinese and follows AstrBot's light or dark theme
 
+After an update, reload BreezeTTS in plugin management, then refresh the workbench
+
 | Entry | Purpose |
 | --- | --- |
 | 合成试听 | Enter text, select a voice, synthesize, play, and download audio |

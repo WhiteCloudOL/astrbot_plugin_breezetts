@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.1 — 2026-10-31
+
+- Detect updated workbench fields against an older running backend and show plugin reload instructions before editing settings.
+- Require explicit values for custom probabilities and the conversation interval.
+- Verify persisted settings and credentials survive reload and gain the new behavior defaults.
+
 ## v1.2.0 — 2026-10-31
 
 - Add private/group probability overrides with inherited defaults and a shared per-conversation cooldown for random and autonomous speech.
