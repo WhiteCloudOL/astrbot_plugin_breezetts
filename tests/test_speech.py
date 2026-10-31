@@ -614,3 +614,118 @@ async def test_explicit_command_can_speak_during_cooldown(speech_plugin, event_f
     assert isinstance(results[0].chain[0], Record)
     assert calls == ["自动语音", "手动请求"]
     await plugin.release_speech_audio(event)
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("发个语音来", True),
+        ("用语音回复我", True),
+        ("想听听你的声音", True),
+        ("Please send a voice message", True),
+        ("Please read this aloud", True),
+        ("请用语音读这句：不要发语音", True),
+        ("不要发语音", False),
+        ("请不要发语音", False),
+        ("Don't speak this time", False),
+        ("语音识别怎么设置", False),
+        ("今天心情不错", False),
+    ],
+)
+async def test_explicit_voice_hint_is_temporary_and_request_scoped(
+    speech_plugin, event_factory, text, expected
+):
+    plugin, _, _ = speech_plugin
+    plugin.config["behavior"]["auto_tts"] = False
+    tool = FunctionTool(name="breeze_tts", description="Voice", parameters={})
+    request = ProviderRequest(
+        prompt=text,
+        system_prompt="Stable persona",
+        contexts=[{"role": "assistant", "content": "History"}],
+        func_tool=ToolSet(tools=[tool]),
+    )
+    event = event_factory(text)
+    await plugin.prepare_speech_request(event, request)
+    await plugin.prepare_speech_request(event, request)
+    assert len(request.extra_user_content_parts) == int(expected)
+    assert request.system_prompt == "Stable persona"
+    assert request.contexts == [{"role": "assistant", "content": "History"}]
+    if expected:
+        assert request.extra_user_content_parts[0]._no_save
+    dumped = dump_messages_with_checkpoints(
+        [
+            Message(
+                role="user",
+                content=[TextPart(text=text), *request.extra_user_content_parts],
+            )
+        ]
+    )
+    assert dumped[0]["content"] == [{"type": "text", "text": text}]
+    await plugin.prepare_speech_request(event_factory("普通文字"), request)
+    assert request.extra_user_content_parts == []
+
+
+async def test_voice_opt_out_suppresses_random_and_tool_for_one_turn(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    event = event_factory("不要发语音，文字回复就行")
+    tool = FunctionTool(name="breeze_tts", description="Voice", parameters={})
+    tools = ToolSet(tools=[tool])
+    request = ProviderRequest(func_tool=tools)
+    await plugin.prepare_speech_request(event, request)
+    assert request.extra_user_content_parts == []
+    assert request.func_tool is tools
+    assert tools.get_tool("breeze_tts") is tool
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("<tts>保留文字</tts>")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    assert calls == [] and event.get_result().get_plain_text() == "保留文字"
+    assert "disabled" in await plugin.breeze_tts(event, "旧工具调用")
+    assert calls == []
+    assert plugin.speech.turn(event_factory("发个语音")).autonomous
+
+
+@pytest.mark.parametrize("keep_text", [False, True])
+async def test_explicit_voice_agent_reports_delivery_and_finishes_once(
+    speech_plugin, event_factory, run_model, keep_text
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(auto_tts=False, keep_text=keep_text)
+    event = event_factory("发个语音来")
+    runner, _ = await run_model(
+        event,
+        [
+            LLMResponse(
+                role="assistant",
+                tools_call_name=["breeze_tts"],
+                tools_call_args=[{"text": "听得到我的声音吗"}],
+                tools_call_ids=["voice-1"],
+            ),
+            LLMResponse(role="assistant", completion_text=""),
+        ],
+    )
+    assert calls == ["听得到我的声音吗"]
+    assert len(event.sent) == 1 + int(keep_text)
+    assert isinstance(event.sent[0][0], Record)
+    history = dump_messages_with_checkpoints(runner.run_context.messages)
+    result = next(
+        message["content"] for message in history if message["role"] == "tool"
+    )
+    assert "synthesis and platform delivery succeeded" in str(result)
+    assert ("text caption was also sent" in str(result)) is keep_text
+    assert "breezetts_turn" not in str(history)
+
+
+async def test_explicit_hint_requires_an_exposed_speech_tool(
+    speech_plugin, event_factory
+):
+    plugin, _, _ = speech_plugin
+    plugin.config["behavior"]["auto_tts"] = False
+    request = ProviderRequest(func_tool=ToolSet(tools=[]))
+    await plugin.prepare_speech_request(event_factory("发个语音来"), request)
+    assert request.extra_user_content_parts == []

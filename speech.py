@@ -101,6 +101,8 @@ class SpeechDelivery:
         if not text or len(text) > config["behavior"]["max_characters"]:
             return "Choose a nonempty spoken passage within the configured character limit."
         state = self.turn(event)
+        if not state.autonomous:
+            return "Speech is disabled for this turn. Continue with ordinary text."
         key = re.sub(r"\s+", "", unicodedata.normalize("NFKC", text)).strip(
             "。.!！?？\"'“” "
         )
@@ -134,7 +136,17 @@ class SpeechDelivery:
                 delivered = True
                 if config["behavior"]["keep_text"]:
                     await event.send(MessageChain([Plain(text)]))
-                return "Voice message sent. Continue with any remaining ordinary text; the spoken passage is already delivered."
+                caption = (
+                    "Its text caption was also sent. "
+                    if config["behavior"]["keep_text"]
+                    else ""
+                )
+                return (
+                    "Voice message sent successfully; synthesis and platform delivery succeeded. "
+                    + caption
+                    + "The spoken passage is already delivered. Continue only with new remaining content; "
+                    "if nothing remains, finish without another message. Speech is available through this tool."
+                )
             except BreezeError as exc:
                 self.logger.warning("Breeze voice tool failed (code=%s).", exc.code)
                 return f"Voice generation failed: {exc} Reply with the passage as ordinary text."

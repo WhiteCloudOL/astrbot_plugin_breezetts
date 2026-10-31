@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig
@@ -99,10 +100,13 @@ class BreezeTTS(Star):
 
     @filter.llm_tool(name="breeze_tts")
     async def breeze_tts(self, event: AstrMessageEvent, text: str):
-        """Speak a short passage when voice suits the conversation or the user asks.
+        """Synthesize and send a real voice message using BreezeTTS workbench settings.
 
         Choose only the passage to speak. Other content can remain ordinary text.
-        Each passage is delivered once per turn; its text is already sent on success.
+        This tool uses its own service and voice configuration. Its result reports
+        actual delivery, including any configured text caption. Choose natural
+        conversational content and describe speech availability from the tool result.
+        After success, continue only with new content that has not been delivered.
 
         Args:
             text(string): The exact text to speak, up to the configured character limit.
@@ -124,14 +128,23 @@ class BreezeTTS(Star):
     async def prepare_speech_request(
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
-        """Add a temporary instruction only for a selected random speech turn.
+        """Describe speech only for random selection or an explicit voice request.
 
         Args:
             event: Incoming event with its cached probability decision.
             req: Request whose stable system prompt and history stay unchanged.
         """
         state = self.speech.turn(event)
-        if req.func_tool and not state.autonomous:
+        if re.search(
+            r"^\s*(?:请|这次|本次|这回|今天)?\s*(?:不要|别|不用|无需|不想|停止|关闭)"
+            r"(?:再|给我|用|发|听|使用){0,2}(?:语音|朗读|声音)"
+            r"|^\s*(?:please\s+)?(?:don't|do not|stop).{0,12}(?:speak|voice|audio|read)\b",
+            event.message_str,
+            re.I,
+        ):
+            state.random_selected = state.autonomous = False
+        # Turn-local opt-outs keep the tool catalog stable and reject execution instead.
+        if req.func_tool and not self.service.settings()["behavior"]["tool_enabled"]:
             req.func_tool = ToolSet(
                 tools=[
                     tool for tool in req.func_tool.tools if tool.name != "breeze_tts"
@@ -143,18 +156,38 @@ class BreezeTTS(Star):
             for part in req.extra_user_content_parts
             if not (isinstance(part, TextPart) and part.text.startswith(marker))
         ]
-        if state.random_selected and not state.source:
+        voice_requested = bool(
+            state.autonomous
+            and req.func_tool
+            and req.func_tool.get_tool("breeze_tts")
+            and re.search(
+                r"(?:发|来)(?:个|条|段|一条|一段|一下)?语音|用语音|语音(?:回复|说|读)"
+                r"|(?:想听|听听).{0,12}(?:声音|说话)|朗读|念给我听|读给我听"
+                r"|\b(?:speak|read.{0,20}aloud|say.{0,20}aloud|send.{0,12}(?:voice|audio))\b",
+                event.message_str,
+                re.I,
+            )
+        )
+        if (state.random_selected or voice_requested) and not state.source:
+            instruction = (
+                marker + "BreezeTTS 可通过工作台中的服务与音色配置合成并发送真实语音。"
+                "当前语音能力和发送结果以 breeze_tts 工具返回为准，旧对话中关于未配置语音的说法不代表当前状态。"
+                "请朗读自然的对话内容，成功发送后仅补充尚未发送的新内容。"
+            )
+            if voice_requested:
+                instruction += (
+                    "用户本轮明确请求语音，请调用 breeze_tts 工具发送选中的简短内容。"
+                )
+            else:
+                instruction += (
+                    "本轮可以用语音表达一小段适合朗读的内容。"
+                    "请自主选择最多一段简短、自然的口语，用 <breeze_tts>正文</breeze_tts> 包裹，"
+                    "其余内容保持普通文字；代码、网址和长篇列表保持文字。"
+                    "若本轮无需语音，直接使用普通文字。"
+                    "如果已调用 breeze_tts 工具发送语音，后续回复使用普通文字。"
+                )
             req.extra_user_content_parts.append(
-                TextPart(
-                    text=(
-                        marker + "本轮可以用语音表达一小段适合朗读的内容。"
-                        "请自主选择最多一段简短、自然的口语，用 <breeze_tts>正文</breeze_tts> 包裹，"
-                        "其余内容保持普通文字；代码、网址和长篇列表保持文字。"
-                        "若本轮无需语音，直接使用普通文字。"
-                        "如果已调用 breeze_tts 工具发送语音，后续回复使用普通文字。"
-                        "</breezetts_turn>"
-                    )
-                ).mark_as_temp()
+                TextPart(text=instruction + "</breezetts_turn>").mark_as_temp()
             )
 
     @filter.on_llm_response(priority=1100000)

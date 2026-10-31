@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.2 — 2026-10-31
+
+- Add temporary current-capability guidance for explicit voice requests while keeping ordinary text turns free of speech instructions.
+- Clarify that the speech tool uses BreezeTTS workbench settings and reports actual synthesis, delivery, and caption status.
+- Keep capability guidance out of saved conversation history and preserve voice opt-out requests.
+
 ## v1.2.1 — 2026-10-31
 
 - Detect updated workbench fields against an older running backend and show plugin reload instructions before editing settings.
