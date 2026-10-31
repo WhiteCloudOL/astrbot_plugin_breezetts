@@ -2,7 +2,8 @@
 
 支持 **BreezeBlue 官方 API** 和 **本地 Breeze TTS API** 的 AstrBot 插件。内置独立的音频工作台，可上传参考录音、编辑文字稿、管理音色、生成试听和下载成品。
 
-作者：清蒸云鸭  
+作者：清蒸云鸭
+
 许可证：[AGPL-3.0](LICENSE)
 
 ![BreezeTTS 工作台](docs/images/studio-desktop.png)

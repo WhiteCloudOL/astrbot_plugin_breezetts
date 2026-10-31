@@ -1,6 +1,7 @@
 # BreezeTTS workbench
 
-Author: 清蒸云鸭  
+Author: 清蒸云鸭
+
 License: AGPL-3.0
 
 Requires AstrBot 4.29.3+ and Python 3.10+. Install the repository, reload the plugin, then open **Plugins → BreezeTTS details → BreezeTTS workbench**. The interface is currently in Simplified Chinese.
