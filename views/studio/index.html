@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BreezeTTS 工作台</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <a class="brand" href="#studio" aria-label="BreezeTTS 工作台"
+          ><span class="brand-icon" aria-hidden="true">≋</span
+          ><span
+            >Breeze<span class="brand-light">TTS</span
+            ><small>声音工作台</small></span
+          ></a
+        >
+        <nav aria-label="工作台导航">
+          <button class="nav active" data-page="studio" aria-current="page">
+            <span aria-hidden="true">◉</span> 合成试听
+          </button>
+          <button class="nav" data-page="voices">
+            <span aria-hidden="true">▥</span> 音色与录音
+            <span id="reference-count" class="count">0</span>
+          </button>
+          <button class="nav" data-page="settings">
+            <span aria-hidden="true">⚙</span> 连接与设置
+          </button>
+        </nav>
+        <div class="sidebar-bottom">
+          <span class="status-dot"></span
+          ><span id="backend-label">本地 API</span
+          ><small>清蒸云鸭 · v1.0.0<br />AGPL-3.0</small>
+        </div>
+      </aside>
+      <main>
+        <header class="topbar">
+          <div>
+            <span class="eyebrow">BREEZE AUDIO WORKSPACE</span>
+            <h1 id="page-title">让文字，有声音。</h1>
+          </div>
+          <div class="save-area">
+            <span id="save-state" role="status">正在载入</span
+            ><button id="save" class="primary" disabled>保存配置</button>
+          </div>
+        </header>
+        <div id="notice" role="status" aria-live="polite" hidden></div>
+        <section id="page-studio" class="page">
+          <div class="studio-layout">
+            <div class="panel composer">
+              <div class="panel-heading">
+                <h2>合成试听</h2>
+                <span class="pill" id="studio-backend">本地 API</span>
+              </div>
+              <label for="synthesis-text">想让声音说些什么？</label>
+              <textarea
+                id="synthesis-text"
+                class="script"
+                rows="8"
+                maxlength="2000"
+                placeholder="输入一段文字，开始你的声音创作……"
+              >
+你好，欢迎来到 BreezeTTS。愿每一段文字，都能找到属于自己的声音。</textarea
+              >
+              <div class="text-meta">
+                <span>保留文字中的停顿与标点</span
+                ><span id="text-count">0 / 1000</span>
+              </div>
+              <div class="voice-summary">
+                <span class="voice-mark" aria-hidden="true">≋</span>
+                <div>
+                  <strong id="selected-voice">尚未选择音色</strong
+                  ><small id="voice-hint"
+                    >前往音色库上传参考录音，或配置声音设计。</small
+                  >
+                </div>
+                <button class="text-button" id="go-voices">选择音色 →</button>
+              </div>
+              <div class="compose-bottom">
+                <span class="muted"
+                  >使用已保存的服务配置<br /><span id="synthesis-hint"
+                    >本地音频将自动保存为 WAV</span
+                  ></span
+                ><button id="synthesize" class="primary large">
+                  生成语音 <span aria-hidden="true">↗</span>
+                </button>
+              </div>
+              <div
+                id="job-status"
+                class="job-status"
+                role="status"
+                hidden
+              ></div>
+            </div>
+            <aside class="panel audition">
+              <span class="eyebrow">NOW PLAYING</span>
+              <h2>听见你的文字</h2>
+              <div class="waveform" aria-hidden="true">
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i
+                ><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              </div>
+              <p id="player-name">生成后，在这里试听</p>
+              <audio
+                id="player"
+                controls
+                preload="none"
+                aria-label="音频试听"
+              ></audio
+              ><button id="download-current" class="secondary" disabled>
+                下载当前音频 ↓
+              </button>
+              <p class="caption">
+                参考录音和合成成品均保存在 AstrBot 插件数据目录中。
+              </p>
+            </aside>
+          </div>
+          <div class="section-heading">
+            <div>
+              <h2>最近生成</h2>
+              <p>试听、下载，或删除不再需要的成品。</p>
+            </div>
+            <button id="refresh-audio" class="text-button">刷新列表 ↻</button>
+          </div>
+          <div id="history" class="audio-list"></div>
+        </section>
+        <section id="page-voices" class="page" hidden>
+          <div class="section-heading">
+            <div>
+              <h2>参考录音</h2>
+              <p>上传一次，重复使用。文字稿应与录音内容完全一致。</p>
+            </div>
+            <label class="secondary upload-label" for="upload">上传录音 +</label
+            ><input
+              id="upload"
+              type="file"
+              accept=".wav,.mp3,.flac,.ogg,audio/wav,audio/mpeg,audio/flac,audio/ogg"
+              class="visually-hidden"
+            />
+          </div>
+          <p class="inline-hint">
+            支持 WAV、MP3、FLAC、OGG，最大 20 MiB / 120
+            秒；上传后统一转换为单声道 WAV。官方克隆需至少 3 秒且转换后不超过 5
+            MB。
+          </p>
+          <div id="references" class="reference-grid"></div>
+          <div class="section-heading">
+            <div>
+              <h2>BreezeBlue 官方音色</h2>
+              <p>先保存官方连接配置，再查询账号或公共音色。</p>
+            </div>
+          </div>
+          <div class="panel catalog">
+            <form id="voice-search-form" class="search-row">
+              <label class="visually-hidden" for="voice-search"
+                >搜索官方音色</label
+              ><input
+                id="voice-search"
+                placeholder="搜索名称、描述或音色特征"
+                maxlength="200"
+              /><label class="visually-hidden" for="voice-type">音色范围</label
+              ><select id="voice-type">
+                <option value="all">全部音色</option>
+                <option value="personal">个人音色</option>
+                <option value="default">公共音色</option></select
+              ><button id="sync-voices" class="secondary" type="submit">
+                查询音色
+              </button>
+            </form>
+            <div id="cloud-voices" class="voice-grid">
+              <p class="empty">连接官方服务后，点击“查询音色”。</p>
+            </div>
+            <button id="more-voices" class="text-button" hidden>
+              加载更多音色 ↓
+            </button>
+          </div>
+          <div class="section-heading">
+            <div>
+              <h2>创建官方音色</h2>
+              <p>先生成预览并试听，满意后再保存到官方账号。</p>
+            </div>
+          </div>
+          <form id="preview-form" class="panel form-grid">
+            <div>
+              <label for="preview-kind">创建方式</label
+              ><select id="preview-kind">
+                <option value="clone">参考录音克隆</option>
+                <option value="design">文字设计音色</option>
+              </select>
+            </div>
+            <div>
+              <label for="preview-name">音色名称</label
+              ><input
+                id="preview-name"
+                maxlength="80"
+                required
+                placeholder="例如：温柔的旁白"
+              />
+            </div>
+            <div>
+              <label for="preview-language">语言代码</label
+              ><input
+                id="preview-language"
+                value="zh"
+                pattern="[A-Za-z]{2}"
+                maxlength="2"
+                required
+              />
+            </div>
+            <div id="clone-fields">
+              <label for="clone-reference">参考录音</label
+              ><select id="clone-reference"></select
+              ><label class="check"
+                ><input id="remove-noise" type="checkbox" /> 去除背景噪声</label
+              >
+            </div>
+            <div class="span-all" id="design-fields" hidden>
+              <label for="voice-description">声音描述</label
+              ><textarea
+                id="voice-description"
+                rows="3"
+                minlength="3"
+                maxlength="500"
+                placeholder="描述年龄感、音色、语调与情绪"
+              ></textarea
+              ><label for="preview-text">试听文字</label
+              ><textarea
+                id="preview-text"
+                rows="2"
+                minlength="3"
+                maxlength="500"
+              >
+你好，这是我的新声音。希望你喜欢这段温柔的问候。</textarea
+              >
+            </div>
+            <div class="span-all form-actions">
+              <span class="caption">调用官方服务可能消耗账户额度。</span
+              ><button id="create-preview" class="primary" type="submit">
+                生成音色预览
+              </button>
+            </div>
+            <div id="preview-result" class="span-all" hidden>
+              <p id="preview-message"></p>
+              <div class="button-row">
+                <button id="play-preview" class="secondary" type="button">
+                  试听预览</button
+                ><button id="save-preview" class="primary" type="button">
+                  保存到官方账号
+                </button>
+              </div>
+            </div>
+          </form>
+        </section>
+        <section id="page-settings" class="page" hidden>
+          <div class="settings-layout">
+            <div class="panel settings-panel">
+              <h2>连接服务</h2>
+              <p class="muted">两套配置分别保存，切换后即可使用。</p>
+              <label for="backend">当前服务</label
+              ><select id="backend" data-config="backend">
+                <option value="local">本地 API</option>
+                <option value="cloud">BreezeBlue 官方 API</option>
+              </select>
+              <div id="local-settings">
+                <div class="field-heading">
+                  <h3>本地 API</h3>
+                  <button id="preset-local" class="text-button">
+                    无鉴权预设</button
+                  ><button id="preset-auth" class="text-button">
+                    鉴权预设
+                  </button>
+                </div>
+                <label for="local-url">服务地址</label
+                ><input
+                  id="local-url"
+                  data-config="local.base_url"
+                  type="url"
+                  placeholder="http://127.0.0.1:7860"
+                /><small
+                  >支持根地址、/v1 或完整的 /v1/audio/speech。Docker
+                  请使用容器可访问的主机地址。</small
+                ><label for="local-key"
+                  >API Key <span class="muted">· 可选</span></label
+                ><input
+                  id="local-key"
+                  data-config="local.api_key"
+                  type="password"
+                  autocomplete="new-password"
+                  placeholder="无鉴权留空；已保存的密钥不会回传"
+                /><label class="check"
+                  ><input id="clear-local-key" type="checkbox" />
+                  清除已保存的本地密钥</label
+                ><label for="local-mode">合成模式</label
+                ><select id="local-mode" data-config="local.mode">
+                  <option value="reference">参考音色复刻</option>
+                  <option value="design">声音设计</option>
+                  <option value="plain">普通朗读</option></select
+                ><label for="local-reference">默认参考录音</label
+                ><select
+                  id="local-reference"
+                  data-config="local.reference_id"
+                ></select
+                ><label for="local-instruction">声音 / 语气描述</label
+                ><textarea
+                  id="local-instruction"
+                  data-config="local.instruction"
+                  rows="3"
+                  placeholder="声音设计时填写声线；参考音色时可描述语气"
+                ></textarea>
+                <div class="form-grid">
+                  <div>
+                    <label for="cfg">CFG 强度</label
+                    ><input
+                      id="cfg"
+                      data-config="local.cfg_scale"
+                      type="number"
+                      min="0.01"
+                      max="10"
+                      step="0.01"
+                    />
+                  </div>
+                  <div>
+                    <label for="seed">随机种子</label
+                    ><input
+                      id="seed"
+                      data-config="local.seed"
+                      type="number"
+                      min="0"
+                      max="4294967295"
+                      step="1"
+                    />
+                  </div>
+                </div>
+                <small
+                  >纯音色复刻建议 CFG=1；带声音描述可尝试
+                  4。普通朗读可不传参考录音和描述。</small
+                >
+              </div>
+              <div id="cloud-settings" hidden>
+                <h3>BreezeBlue 官方 API</h3>
+                <label for="cloud-url">服务地址</label
+                ><input
+                  id="cloud-url"
+                  data-config="cloud.base_url"
+                  type="url"
+                /><label for="cloud-key">API Key</label
+                ><input
+                  id="cloud-key"
+                  data-config="cloud.api_key"
+                  type="password"
+                  autocomplete="new-password"
+                  placeholder="已保存的密钥不会回传；留空保留原值"
+                /><label class="check"
+                  ><input id="clear-cloud-key" type="checkbox" />
+                  清除已保存的官方密钥</label
+                ><label for="cloud-voice">音色 ID</label
+                ><input
+                  id="cloud-voice"
+                  data-config="cloud.voice_id"
+                  placeholder="从音色库选择，或粘贴已保存的 voice_id"
+                /><label for="cloud-model"
+                  >模型 ID <span class="muted">· 留空自动选择</span></label
+                ><input
+                  id="cloud-model"
+                  data-config="cloud.model_id"
+                  list="models"
+                /><datalist id="models"></datalist
+                ><label for="cloud-language"
+                  >语言代码 <span class="muted">· 留空自动识别</span></label
+                ><input
+                  id="cloud-language"
+                  data-config="cloud.language_code"
+                  maxlength="2"
+                  placeholder="zh / en / ja"
+                /><label for="cloud-instructions">表演指令</label
+                ><textarea
+                  id="cloud-instructions"
+                  data-config="cloud.instructions"
+                  rows="3"
+                  placeholder="轻声、温柔地说，带一点期待"
+                ></textarea>
+                <div class="form-grid">
+                  <div>
+                    <label for="guidance">指导强度</label
+                    ><input
+                      id="guidance"
+                      data-config="cloud.guidance_scale"
+                      type="number"
+                      min="1"
+                      max="10"
+                      step="0.1"
+                    />
+                  </div>
+                  <div>
+                    <label for="speed">语速倍率</label
+                    ><input
+                      id="speed"
+                      data-config="cloud.speed"
+                      type="number"
+                      min="0.5"
+                      max="2"
+                      step="0.01"
+                    />
+                  </div>
+                  <div>
+                    <label for="volume">音量倍率</label
+                    ><input
+                      id="volume"
+                      data-config="cloud.volume"
+                      type="number"
+                      min="0.01"
+                      max="2"
+                      step="0.01"
+                    />
+                  </div>
+                  <div>
+                    <label for="cloud-delivery">交付方式</label
+                    ><select id="cloud-delivery" data-config="cloud.delivery">
+                      <option value="sync">同步</option>
+                      <option value="stream">流式接收</option>
+                      <option value="async">后台任务</option>
+                    </select>
+                  </div>
+                </div>
+                <label for="cloud-format">输出格式</label
+                ><select id="cloud-format" data-config="cloud.output_format">
+                  <option>wav</option>
+                  <option>mp3</option>
+                  <option>flac</option>
+                  <option>pcm</option>
+                  <option>aac</option>
+                  <option>opus</option>
+                  <option>mp3_24000_64</option>
+                  <option>mp3_24000_96</option>
+                  <option>mp3_24000_128</option>
+                  <option>mp3_24000_160</option>
+                  <option>wav_24000</option>
+                  <option>pcm_24000</option>
+                  <option>flac_24000</option>
+                  <option>aac_24000_128</option></select
+                ><label class="check"
+                  ><input data-config="cloud.speaker_boost" type="checkbox" />
+                  增强音色相似度</label
+                ><small>流式接收完成后统一播放；裸 PCM 自动封装成 WAV。</small>
+              </div>
+              <div class="form-actions">
+                <button id="test-connection" class="secondary">
+                  保存并检查连接</button
+                ><span
+                  id="connection-result"
+                  role="status"
+                  class="caption"
+                ></span>
+              </div>
+            </div>
+            <div class="panel settings-panel">
+              <h2>聊天与运行</h2>
+              <p class="muted">
+                命令：<code>/breezetts 想说的话</code
+                ><br />别名：<code>/btts</code>、<code>/语音合成</code>
+              </p>
+              <label class="check"
+                ><input data-config="behavior.auto_tts" type="checkbox" />
+                自动将 LLM 回复转为语音</label
+              ><small
+                >适用于已完成的非流式回复；开启时请关闭 AstrBot 内置 TTS
+                和聊天流式输出，避免重复语音。失败时保留文字。</small
+              ><label class="check"
+                ><input data-config="behavior.keep_text" type="checkbox" />
+                自动语音时保留文字</label
+              ><label class="check"
+                ><input data-config="behavior.tool_enabled" type="checkbox" />
+                允许 LLM 使用语音工具</label
+              ><label for="max-characters">单次文字上限</label
+              ><input
+                id="max-characters"
+                data-config="behavior.max_characters"
+                type="number"
+                min="1"
+                max="2000"
+              /><small
+                >官方默认账号上限 1000
+                字；增加前请确认账号权限。超限自动回复保持文字，不会截断朗读。</small
+              ><label for="timeout">合成总超时（秒）</label
+              ><input
+                id="timeout"
+                data-config="behavior.timeout"
+                type="number"
+                min="10"
+                max="1800"
+              /><label for="history-limit">保留成品与预览数量</label
+              ><input
+                id="history-limit"
+                data-config="behavior.history_limit"
+                type="number"
+                min="1"
+                max="200"
+              /><small
+                >新音频生成后清理最旧的成品与预览，参考录音保留到手动删除。</small
+              >
+              <div class="info-card">
+                <strong>密钥留在服务端</strong>
+                <p>
+                  工作台仅显示是否已配置。输入新密钥可替换，留空则保留；移除密钥需要勾选“清除”。
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+        <footer>BreezeTTS · 为文字赋予声音</footer>
+      </main>
+    </div>
+    <dialog id="reference-dialog">
+      <form id="reference-form">
+        <h2 class="text-h3 pa-4 pb-0 pl-6">编辑参考录音</h2>
+        <div class="dialog-body">
+          <label for="reference-name">名称</label
+          ><input id="reference-name" required maxlength="120" /><label
+            for="reference-text"
+            >准确文字稿</label
+          ><textarea
+            id="reference-text"
+            rows="6"
+            maxlength="4000"
+            placeholder="完整填写录音中说出的每一个字，包括重复内容。"
+          ></textarea>
+          <p class="caption">
+            本地音色复刻必须配对录音与文字稿；官方克隆由服务自动转写。
+          </p>
+        </div>
+        <div class="dialog-actions">
+          <button
+            id="close-reference"
+            variant="text"
+            type="button"
+            class="text-button"
+          >
+            取消</button
+          ><button variant="tonal" class="primary" type="submit">
+            保存录音信息
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="delete-dialog">
+      <h2 class="text-h3 pa-4 pb-0 pl-6">删除音频</h2>
+      <p class="dialog-body" id="delete-message"></p>
+      <div class="dialog-actions">
+        <button id="cancel-delete" variant="text" class="text-button">
+          取消</button
+        ><button id="confirm-delete" variant="tonal" class="danger">
+          删除
+        </button>
+      </div>
+    </dialog>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

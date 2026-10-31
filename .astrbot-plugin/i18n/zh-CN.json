@@ -1,0 +1,8 @@
+{
+  "views": {
+    "studio": {
+      "title": "BreezeTTS 工作台",
+      "description": "配置服务、管理音色、合成与下载音频。"
+    }
+  }
+}
