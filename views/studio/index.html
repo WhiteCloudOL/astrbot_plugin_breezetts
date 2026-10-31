@@ -37,7 +37,7 @@
         <div class="sidebar-bottom">
           <span class="status-dot"></span
           ><span id="backend-label">本地 API</span
-          ><small>清蒸云鸭 · v1.0.1<br />AGPL-3.0</small>
+          ><small>清蒸云鸭 · v1.1.0<br />AGPL-3.0</small>
         </div>
       </aside>
       <main id="main-content" tabindex="-1">
@@ -515,57 +515,35 @@
                 命令：<code>/breezetts 想说的话</code
                 ><br />别名：<code>/btts</code>、<code>/语音合成</code>
               </p>
-              <label class="switch-row"
-                ><span>自动将 LLM 回复转为语音</span
-                ><input
-                  data-config="behavior.auto_tts"
-                  type="checkbox"
-                  role="switch"
-                  class="switch" /></label
-              ><small
-                >适用于已完成的非流式回复；开启时请关闭 AstrBot 内置 TTS
-                和聊天流式输出，避免重复语音。失败时保留文字</small
-              ><label class="switch-row"
-                ><span>自动语音时保留文字</span
-                ><input
-                  data-config="behavior.keep_text"
-                  type="checkbox"
-                  role="switch"
-                  class="switch" /></label
-              ><label class="switch-row"
-                ><span>允许 LLM 使用语音工具</span
-                ><input
-                  data-config="behavior.tool_enabled"
-                  type="checkbox"
-                  role="switch"
-                  class="switch" /></label
-              ><label for="max-characters">单次文字上限</label
-              ><input
-                id="max-characters"
-                data-config="behavior.max_characters"
-                type="number"
-                min="1"
-                max="2000"
-              /><small
-                >官方默认账号上限 1000
-                字；增加前请确认账号权限。超限自动回复保持文字，不会截断朗读</small
-              ><label for="timeout">合成总超时（秒）</label
-              ><input
-                id="timeout"
-                data-config="behavior.timeout"
-                type="number"
-                min="10"
-                max="1800"
-              /><label for="history-limit">保留成品与预览数量</label
-              ><input
-                id="history-limit"
-                data-config="behavior.history_limit"
-                type="number"
-                min="1"
-                max="200"
-              /><small
-                >新音频生成后清理最旧的成品与预览，参考录音保留到手动删除</small
-              >
+              <label class="switch-row">
+                <span>随机语音</span>
+                <input data-config="behavior.auto_tts" type="checkbox" role="switch" class="switch" />
+              </label>
+              <small>每轮按概率让模型选取一小段适合朗读的内容，其余内容保留文字</small>
+              <label for="trigger-probability">随机触发概率（%）</label>
+              <input id="trigger-probability" data-config="behavior.trigger_probability" type="number" min="0" max="100" step="1" />
+              <small>默认 20%，每轮抽取一次；可与 LLM 自主语音一起开启</small>
+              <label class="switch-row">
+                <span>保留朗读片段文字</span>
+                <input data-config="behavior.keep_text" type="checkbox" role="switch" class="switch" />
+              </label>
+              <label class="switch-row">
+                <span>LLM 自主语音</span>
+                <input data-config="behavior.tool_enabled" type="checkbox" role="switch" class="switch" />
+              </label>
+              <small>模型通过语音工具自主选择朗读内容；语音回合使用完整回复处理，文字支持普通发送、AstrBot 默认分段和分段插件</small>
+              <label for="max-characters">单次文字上限</label>
+              <input id="max-characters" data-config="behavior.max_characters" type="number" min="1" max="2000" />
+              <small>官方默认账号上限 1000 字；提升上限前请确认账号权限。超限片段保持文字</small>
+              <label for="timeout">合成总超时（秒）</label>
+              <input id="timeout" data-config="behavior.timeout" type="number" min="10" max="1800" />
+              <label for="history-limit">保留成品与预览数量</label>
+              <input id="history-limit" data-config="behavior.history_limit" type="number" min="1" max="200" />
+              <small>达到数量或容量上限时清理最旧成品，参考录音保留到手动删除</small>
+              <label for="history-max-mb">成品与预览总容量（MiB）</label>
+              <input id="history-max-mb" data-config="behavior.history_max_mb" type="number" min="64" max="4096" step="1" />
+              <small>默认 256 MiB；待发送音频在发送后清理，参考录音单独保留</small>
+              <p id="cache-usage" class="caption" aria-live="polite"></p>
               <div class="info-card">
                 <strong>密钥留在服务端</strong>
                 <p>填写新密钥后保存即可替换；点击右侧“清空”，再保存即可移除</p>

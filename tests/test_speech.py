@@ -1,0 +1,460 @@
+"""Exercise selective speech with real AstrBot events and send stages."""
+
+import asyncio
+import copy
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+pytest.importorskip("astrbot")
+
+from astrbot.api.event import MessageEventResult, ResultContentType
+from astrbot.api.message_components import Image, Plain, Record
+from astrbot.api.provider import LLMResponse, ProviderRequest
+from astrbot.core.agent.message import Message, TextPart, dump_messages_with_checkpoints
+from astrbot.core.agent.tool import FunctionTool, ToolSet
+from astrbot.core.config.default import DEFAULT_CONFIG
+from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
+from astrbot.core.platform.message_type import MessageType
+from astrbot.core.platform.platform_metadata import PlatformMetadata
+from test_host import loaded_plugin  # noqa: F401
+
+
+class CapturedEvent(AstrMessageEvent):
+    """Capture actual AstrBot message chains at the platform boundary."""
+
+    async def send(self, message):
+        for part in message.chain:
+            if isinstance(part, Record) and part.path:
+                assert Path(part.path).is_file()
+        self.sent.append(copy.deepcopy(message.chain))
+
+
+@pytest.fixture
+def event_factory():
+    def make(text="Say hello"):
+        message = AstrBotMessage()
+        message.type = MessageType.FRIEND_MESSAGE
+        message.sender = MessageMember("user", "User")
+        message.message = [Plain(text)]
+        message.message_str = text
+        message.message_id = "test-message"
+        message.self_id = "bot"
+        event = CapturedEvent(
+            text, message, PlatformMetadata("test", "test", "test"), "session"
+        )
+        event.sent = []
+        event.plugins_name = ["astrbot_plugin_breezetts"]
+        return event
+
+    return make
+
+
+@pytest.fixture
+async def speech_plugin(loaded_plugin, server):  # noqa: F811
+    from aiohttp import web
+
+    calls = []
+
+    async def upstream(request):
+        calls.append((await request.post())["text"])
+        return web.Response(body=b"\x01\x00" * 2400, content_type="audio/pcm")
+
+    _, context, metadata = loaded_plugin
+    plugin = metadata.star_cls
+    plugin.config["local"].update(base_url=await server(upstream), mode="plain")
+    plugin.config["behavior"].update(
+        auto_tts=True, trigger_probability=100, keep_text=False
+    )
+    host = copy.deepcopy(DEFAULT_CONFIG)
+    host.update(t2i=False)
+    host["platform_settings"].update(
+        reply_prefix="", reply_with_mention=False, reply_with_quote=False
+    )
+    host["provider_tts_settings"]["enable"] = False
+    context.get_config = lambda *args, **kwargs: host
+    context.get_using_tts_provider_async = AsyncMock(return_value=None)
+    context.send_message = AsyncMock()
+    return plugin, calls, host
+
+
+@pytest.fixture
+def run_model(speech_plugin):
+    from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
+    from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
+    from astrbot.core.astr_agent_hooks import MAIN_AGENT_HOOKS
+    from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+    from astrbot.core.provider.register import llm_tools
+
+    plugin, _, _ = speech_plugin
+
+    async def run(event, responses):
+        tool = next(tool for tool in llm_tools.func_list if tool.name == "breeze_tts")
+        request = ProviderRequest(
+            prompt=event.message_str,
+            system_prompt="Stable persona",
+            func_tool=ToolSet(tools=[tool]),
+        )
+        await plugin.prepare_speech(event)
+        await plugin.prepare_speech_request(event, request)
+        provider = SimpleNamespace(
+            provider_config={"id": "test-provider"},
+            text_chat=AsyncMock(side_effect=responses),
+        )
+        runner = ToolLoopAgentRunner()
+        await runner.reset(
+            provider,
+            request,
+            AgentContextWrapper(
+                context=AstrAgentContext(context=plugin.context, event=event)
+            ),
+            FunctionToolExecutor(),
+            MAIN_AGENT_HOOKS,
+            streaming=False,
+        )
+        for _ in range(5):
+            async for _ in runner.step():
+                pass
+            if runner.done():
+                break
+        assert runner.done()
+        return runner, provider
+
+    return run
+
+
+async def test_probability_prompt_cache_and_tool_visibility(
+    speech_plugin, event_factory
+):
+    plugin, _, _ = speech_plugin
+    plugin.config["behavior"].update(trigger_probability=20, tool_enabled=False)
+    event = event_factory()
+    tool = FunctionTool(name="breeze_tts", description="Speech", parameters={})
+    tools = ToolSet(tools=[tool])
+    req = ProviderRequest(
+        prompt="Hello",
+        system_prompt="Stable persona",
+        contexts=[{"role": "assistant", "content": "History"}],
+        func_tool=tools,
+    )
+    with patch("random.random", return_value=0.1) as draw:
+        await plugin.prepare_speech(event)
+        await plugin.prepare_speech_request(event, req)
+        await plugin.prepare_speech_request(event, req)
+        assert draw.call_count == 1
+    assert event.get_extra("enable_streaming") is False
+    assert req.system_prompt == "Stable persona" and req.prompt == "Hello"
+    assert req.contexts == [{"role": "assistant", "content": "History"}]
+    assert len(req.extra_user_content_parts) == 1
+    assert req.extra_user_content_parts[0]._no_save
+    assert req.func_tool.get_tool("breeze_tts") is None
+    assert tools.get_tool("breeze_tts") is tool
+    dumped = dump_messages_with_checkpoints(
+        [
+            Message(
+                role="user",
+                content=[TextPart(text="Hello"), *req.extra_user_content_parts],
+            )
+        ]
+    )
+    assert dumped[0]["content"] == [{"type": "text", "text": "Hello"}]
+    # Reusing a request with a different event drops its previous temporary hint.
+    with patch("random.random", return_value=0.9):
+        missed = event_factory()
+        await plugin.prepare_speech(missed)
+        await plugin.prepare_speech_request(missed, req)
+    assert missed.get_extra("enable_streaming") is None
+    assert req.extra_user_content_parts == []
+    plugin.config["behavior"].update(auto_tts=False, tool_enabled=True)
+    req = ProviderRequest(func_tool=tools, system_prompt="Stable persona")
+    await plugin.prepare_speech_request(event_factory(), req)
+    assert req.func_tool is tools and req.extra_user_content_parts == []
+
+
+async def test_clean_history_selective_chain_and_failure(
+    speech_plugin, event_factory, monkeypatch, caplog
+):
+    plugin, calls, _ = speech_plugin
+    event = event_factory()
+    raw = "前面文字。<breeze_tts>只朗读这一句</breeze_tts>后面文字。"
+    resp = LLMResponse(role="assistant", completion_text=raw)
+    await plugin.clean_speech_response(event, resp)
+    await plugin.clean_speech_response(event, resp)
+    messages = [Message(role="assistant", content=[TextPart(text=raw)])]
+    await plugin.clean_speech_history(event, SimpleNamespace(messages=messages), resp)
+    assert (
+        messages[0].content[0].text
+        == resp.completion_text
+        == "前面文字。只朗读这一句后面文字。"
+    )
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain(resp.completion_text)],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    await plugin.auto_speak(event)
+    chain = event.get_result().chain
+    assert [type(part) for part in chain] == [Plain, Record, Plain]
+    assert [part.text for part in chain] == ["前面文字。", "只朗读这一句", "后面文字。"]
+    assert calls == ["只朗读这一句"]
+    await plugin.release_speech_audio(event)
+    # Failed synthesis keeps the chosen words at their original position.
+    monkeypatch.setattr(
+        plugin.service.client,
+        "synthesize",
+        AsyncMock(side_effect=RuntimeError("private-key-test")),
+    )
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain(raw)], result_content_type=ResultContentType.LLM_RESULT
+        )
+    )
+    await plugin.auto_speak(event)
+    assert all(isinstance(part, Plain) for part in event.get_result().chain)
+    assert (
+        "".join(part.text for part in event.get_result().chain)
+        == "前面文字。只朗读这一句后面文字。"
+    )
+    assert "private-key-test" not in caplog.text
+
+
+async def test_tool_and_random_coexist_deduplicate_and_isolate(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    event = event_factory()
+    outcomes = await asyncio.gather(
+        plugin.breeze_tts(event, "你好"), plugin.breeze_tts(event, "<tts>你好。</tts>")
+    )
+    assert len(event.sent) == 1 and calls == ["你好"]
+    assert any("already" in outcome for outcome in outcomes)
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("<breeze_tts>你好</breeze_tts> 其余文字")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    assert calls == ["你好"]
+    assert "<" not in event.get_result().get_plain_text()
+    other = event_factory()
+    await plugin.breeze_tts(other, "你好")
+    assert len(other.sent) == 1 and calls == ["你好", "你好"]
+
+
+@pytest.mark.parametrize("mode", ["none", "native", "splitter"])
+@pytest.mark.parametrize("keep_text", [False, True])
+async def test_real_decorate_and_send_pipeline(
+    speech_plugin, event_factory, run_model, mode, keep_text
+):
+    from astrbot.core.pipeline.respond.stage import RespondStage
+    from astrbot.core.pipeline.result_decorate.stage import ResultDecorateStage
+
+    plugin, calls, host = speech_plugin
+    plugin.config["behavior"]["keep_text"] = keep_text
+    event = event_factory()
+    segmented = host["platform_settings"]["segmented_reply"]
+    segmented.update(
+        enable=mode == "native",
+        interval="0,0",
+        interval_method="random",
+        split_mode="regex",
+        regex=r".*?[。？！]+|.+$",
+        content_cleanup_rule="",
+    )
+    host["platform_settings"]["forward_threshold"] = 0
+    response = LLMResponse(
+        role="assistant",
+        completion_text="开头第一句。第二句。<breeze_tts>中间语音</breeze_tts>结尾第一句。第二句。",
+    )
+    runner, provider = await run_model(event, [response])
+    assert provider.text_chat.await_count == 1
+    saved = str(dump_messages_with_checkpoints(runner.run_context.messages))
+    assert "breezetts_turn" not in saved and "<breeze_tts>" not in saved
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain(response.completion_text)],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    if mode == "splitter":
+        module = pytest.importorskip("data.plugins.astrbot_plugin_splitter.main")
+        splitter = object.__new__(module.MessageSplitterPlugin)
+        splitter.context = plugin.context
+        splitter._is_simple_mode = splitter._is_advanced_mode = False
+        splitter._is_pro_mode = True
+        splitter._processing_locks = {}
+        settings = {
+            "split_regex": r"[。\n]+",
+            "enable_reply": False,
+            "enable_smart_reply": False,
+            "enable_smart_split": False,
+            "delay_strategy": "fixed",
+            "fixed_delay": 0,
+            "other_media_strategy": "单独",
+        }
+        splitter._get_cfg = lambda key, default=None: settings.get(key, default)
+
+        async def send_split(_event, chain, *_args):
+            await event.send(MessageEventResult(chain=chain))
+
+        splitter._send_proactive_segment = AsyncMock(side_effect=send_split)
+        await plugin.auto_speak(event)
+        await splitter.on_decorating_result(event)
+    pipeline = SimpleNamespace(
+        astrbot_config=host, plugin_manager=SimpleNamespace(context=plugin.context)
+    )
+    decorate, respond = ResultDecorateStage(), RespondStage()
+    await decorate.initialize(pipeline)
+    await respond.initialize(pipeline)
+    async for _ in decorate.process(event):
+        pass
+    await respond.process(event)
+    delivered = [part for chain in event.sent for part in chain]
+    assert sum(isinstance(part, Record) for part in delivered) == 1
+    voice_index = next(
+        index for index, part in enumerate(delivered) if isinstance(part, Record)
+    )
+    before = "".join(
+        part.text for part in delivered[:voice_index] if isinstance(part, Plain)
+    )
+    after = "".join(
+        part.text for part in delivered[voice_index + 1 :] if isinstance(part, Plain)
+    )
+    expected_before = "开头第一句。第二句。"
+    expected_after = ("中间语音" if keep_text else "") + "结尾第一句。第二句。"
+    if mode == "splitter":
+        expected_before = expected_before.replace("。", "")
+        expected_after = expected_after.replace("。", "")
+    assert before == expected_before
+    assert after == expected_after
+    assert calls == ["中间语音"]
+    assert not plugin.service.delivery_audio
+
+
+async def test_agent_tool_execution_and_tag_followup_dedup(
+    speech_plugin, event_factory, run_model
+):
+    plugin, calls, _ = speech_plugin
+    event = event_factory()
+    runner, provider = await run_model(
+        event,
+        [
+            LLMResponse(
+                role="assistant",
+                tools_call_name=["breeze_tts", "breeze_tts"],
+                tools_call_args=[{"text": "你好"}, {"text": "你好。"}],
+                tools_call_ids=["call-1", "call-2"],
+            ),
+            LLMResponse(
+                role="assistant",
+                completion_text="<breeze_tts>你好</breeze_tts>其余内容保持文字",
+            ),
+        ],
+    )
+    assert provider.text_chat.await_count == 2
+    assert calls == ["你好"] and len(event.sent) == 1
+    final = runner.get_final_llm_resp()
+    assert final.completion_text == "你好其余内容保持文字"
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain(final.completion_text)],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    assert all(isinstance(part, Plain) for part in event.get_result().chain)
+    assert calls == ["你好"]
+    history = str(dump_messages_with_checkpoints(runner.run_context.messages))
+    assert "<breeze_tts>" not in history and "breezetts_turn" not in history
+
+
+async def test_tool_voice_and_caption_are_separate_messages(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"]["keep_text"] = True
+    event = event_factory()
+    outcome = await plugin.breeze_tts(event, "单独语音")
+    assert "sent" in outcome and calls == ["单独语音"]
+    assert len(event.sent) == 2
+    assert len(event.sent[0]) == 1 and isinstance(event.sent[0][0], Record)
+    assert len(event.sent[1]) == 1 and isinstance(event.sent[1][0], Plain)
+
+
+async def test_agent_plain_turn_preserves_component_boundaries(
+    speech_plugin, event_factory, run_model
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(auto_tts=False, tool_enabled=False)
+    event = event_factory()
+    runner, _ = await run_model(
+        event, [LLMResponse(role="assistant", completion_text="纯文字回复")]
+    )
+    assert runner.get_final_llm_resp().completion_text == "纯文字回复"
+    first, second = Plain("第一段"), Plain("第二段")
+    event.set_result(
+        MessageEventResult(
+            chain=[first, second], result_content_type=ResultContentType.LLM_RESULT
+        )
+    )
+    await plugin.auto_speak(event)
+    assert event.get_result().chain == [first, second] and calls == []
+
+
+async def test_boundaries_components_and_one_tag_per_turn(speech_plugin, event_factory):
+    plugin, calls, _ = speech_plugin
+    event = event_factory()
+    image = Image.fromURL("https://example.test/picture.png")
+    event.set_result(
+        MessageEventResult(
+            chain=[
+                Plain("前<tts>第一"),
+                Plain("句</tts>"),
+                image,
+                Plain("<tts>第二句</tts>后"),
+            ],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    chain = event.get_result().chain
+    assert calls == ["第一句"] and chain[2] is image
+    assert chain[3].text == "第二句" and chain[4].text == "后"
+    await plugin.breeze_tts(event, "另一次调用")
+    assert calls == ["第一句"]
+
+
+async def test_disabled_and_over_limit_tags_are_clean_text(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(auto_tts=False, tool_enabled=False)
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("<tts>文字</tts><tts>未闭合")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    assert (
+        "".join(part.text for part in event.get_result().chain) == "文字未闭合"
+        and calls == []
+    )
+    plugin.config["behavior"].update(auto_tts=True, max_characters=1)
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("<tts>超过上限</tts>")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    assert event.get_result().get_plain_text() == "超过上限" and calls == []

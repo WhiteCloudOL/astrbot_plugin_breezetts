@@ -172,20 +172,26 @@
     "items": {
       "auto_tts": {
         "type": "bool",
-        "description": "自动语音回复",
-        "hint": "对已完成的非流式 LLM 文字回复附加语音；失败保留文字。",
+        "description": "随机语音",
+        "hint": "每轮按概率邀请模型选取一小段朗读，与自主语音共享去重状态。",
         "default": false
+      },
+      "trigger_probability": {
+        "type": "int",
+        "description": "随机触发概率（%）",
+        "hint": "0–100，每轮只抽取一次；命中后由模型选择适合朗读的片段。",
+        "default": 20
       },
       "keep_text": {
         "type": "bool",
-        "description": "保留自动回复文字",
-        "hint": "关闭后仅在合成成功时移除文字组件。",
+        "description": "保留朗读片段文字",
+        "hint": "语音与对应文字一起发送，其余文字保持原位。",
         "default": true
       },
       "tool_enabled": {
         "type": "bool",
-        "description": "允许 LLM 语音工具",
-        "hint": "允许模型通过 breeze_tts 工具主动发送语音。",
+        "description": "LLM 自主语音",
+        "hint": "模型可按聊天语境或用户要求调用 breeze_tts，选择需要朗读的片段。",
         "default": true
       },
       "max_characters": {
@@ -205,6 +211,12 @@
         "description": "成品 / 预览保留数量",
         "hint": "1–200；参考录音最多 100 条，需手动删除。",
         "default": 50
+      },
+      "history_max_mb": {
+        "type": "int",
+        "description": "成品 / 预览总容量（MiB）",
+        "hint": "64–4096，达到数量或容量上限时清理最旧成品；参考录音单独保留。",
+        "default": 256
       }
     }
   }

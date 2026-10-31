@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.1.0 — 2026-10-31
+
+- Replace whole-reply automatic synthesis with probability-based, model-selected spoken passages; rename Automatic Reply Speech to Random Speech and Allow LLM Speech Tool to Autonomous LLM Speech in Chat & Runtime.
+- Support concurrent random and autonomous modes with turn-local deduplication, tag-free replies/history, and temporary prompt hints.
+- Preserve ordinary text and voice ordering with no splitting, AstrBot's built-in splitting, and the splitter plugin.
+- Send tool-generated voice messages independently and retain text when generation fails.
+- Add configurable count and total-capacity limits for downloaded outputs/previews, with reservations for in-flight delivery and reads.
+- Remove standalone Python project/development manifests and use host tooling for verification.
+
 ## v1.0.1 — 2026-10-31
 
 - Fix audio playback through the AstrBot bridge and restore the latest generated audio on reopening.

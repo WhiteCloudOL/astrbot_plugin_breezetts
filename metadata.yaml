@@ -1,7 +1,7 @@
 name: astrbot_plugin_breezetts
 display_name: BreezeTTS
 desc: BreezeBlue 官方与本地语音合成，支持音色管理、声音克隆、声音设计和音频工作台。
-version: v1.0.1
+version: v1.1.0
 author: 清蒸云鸭
 repo: https://github.com/WhiteCloudOL/astrbot_plugin_breezetts
 license: AGPL-3.0

@@ -22,6 +22,25 @@ def test_url_normalization(url, expected):
     assert api_root(url) == expected
 
 
+def test_generated_cache_count_capacity_and_protected_audio(tmp_path):
+    store = AudioStore(tmp_path / "bounded")
+    reference = store.add(b"r" * 20, "wav", "reference", "Reference")
+    oldest = store.add(b"a" * 4, "wav", "output", "Old")
+    middle = store.add(b"b" * 4, "wav", "preview", "Preview")
+    newest = store.add(b"c" * 4, "wav", "output", "New")
+    store.prune(10, max_bytes=8)
+    assert oldest["id"] not in store.items
+    assert reference["id"] in store.items and middle["id"] in store.items
+    store.prune(1, {middle["id"]}, max_bytes=8)
+    assert newest["id"] not in store.items
+    assert set(store.items) == {reference["id"], middle["id"]}
+    last = store.add(b"d" * 4, "wav", "output", "Last")
+    store.prune(1, {middle["id"], last["id"]}, max_bytes=8)
+    assert all(store.path(item["id"]).is_file() for item in (middle, last))
+    store.prune(1, max_bytes=8)
+    assert set(store.items) == {reference["id"], last["id"]}
+
+
 @pytest.mark.parametrize(
     "url",
     [

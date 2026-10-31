@@ -34,11 +34,13 @@ DEFAULTS = {
     },
     "behavior": {
         "auto_tts": False,
+        "trigger_probability": 20,
         "keep_text": True,
         "tool_enabled": True,
         "max_characters": 1000,
         "timeout": 600,
         "history_limit": 50,
+        "history_max_mb": 256,
     },
 }
 FORMATS = {
@@ -201,8 +203,10 @@ def validate_config(value: dict) -> dict:
         ("cloud", "speed", 0.5, 2),
         ("cloud", "volume", 0.01, 2),
         ("behavior", "max_characters", 1, 2000),
+        ("behavior", "trigger_probability", 0, 100),
         ("behavior", "timeout", 10, 1800),
         ("behavior", "history_limit", 1, 200),
+        ("behavior", "history_max_mb", 64, 4096),
     ]
     for group, name, low, high in ranges:
         if not low <= result[group][name] <= high:

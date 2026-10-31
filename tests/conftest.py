@@ -4,7 +4,9 @@ import copy
 import importlib.util
 import io
 import logging
+import os
 import sys
+import tempfile
 import wave
 from pathlib import Path
 
@@ -13,6 +15,10 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 ROOT = Path(__file__).resolve().parents[1]
+HOST_ROOT = tempfile.TemporaryDirectory(
+    prefix="breezetts-host-tests-", ignore_cleanup_errors=True
+)
+os.environ["ASTRBOT_ROOT"] = HOST_ROOT.name
 spec = importlib.util.spec_from_file_location(
     "breezetts_test", ROOT / "__init__.py", submodule_search_locations=[str(ROOT)]
 )
@@ -22,6 +28,10 @@ spec.loader.exec_module(module)
 
 from breezetts_test.service import BreezeService  # noqa: E402
 from breezetts_test.settings import DEFAULTS  # noqa: E402
+
+
+def pytest_unconfigure(config):
+    HOST_ROOT.cleanup()
 
 
 class SavedConfig(dict):

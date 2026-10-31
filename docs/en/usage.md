@@ -30,6 +30,12 @@ Clear buttons sit beside key inputs. Click Clear and save to remove a key; enter
 
 Boolean settings use accessible capsule switches. The player sits beside the composer on PC and below it on mobile, showing the audio name, duration, loading state, retry action, and download button. Reopening the workbench loads the most recent generated output
 
+In Connection & Settings → Chat & Runtime, enable random speech and choose its probability, or enable autonomous LLM speech to let the model select passages through `breeze_tts`. Both modes share turn-local duplicate suppression. Selected passages become voice messages while ordinary text follows the current delivery mode: no splitting, AstrBot's built-in splitting, or the splitter plugin
+
+The former automatic-reply speech option is now Random Speech, and Allow LLM Speech Tool is now Autonomous LLM Speech. Both remain in Chat & Runtime
+
+Generated audio and previews have configurable count and capacity limits, defaulting to 50 files and 256 MiB. Reference recordings are retained separately
+
 ![Mobile workbench](../images/studio-mobile.png)
 
 See the [README](../../README.md) for installation, configuration fields, and chat commands

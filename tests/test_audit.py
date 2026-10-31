@@ -134,7 +134,7 @@ async def test_completed_audio_survives_cleanup_failure(
     monkeypatch.setattr(
         service.store,
         "prune",
-        MagicMock(side_effect=PermissionError("private-key-test")),
+        MagicMock(side_effect=[None, None, PermissionError("private-key-test")]),
     )
     item = await service.synthesize("测试")
     assert service.store.path(item["id"]).exists()

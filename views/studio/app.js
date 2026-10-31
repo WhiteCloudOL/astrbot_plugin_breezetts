@@ -72,6 +72,10 @@ function markDirty() {
 
 function updateSummary() {
   if (!draft) return;
+  const generated = state.audio.filter((item) => item.kind !== "reference");
+  const cacheMiB = generated.reduce((total, item) => total + item.size, 0) / 1024 / 1024;
+  $("cache-usage").textContent = `当前成品与预览：${generated.length} 条 · ${cacheMiB.toFixed(1)} MiB`;
+  $("trigger-probability").disabled = !draft.behavior.auto_tts;
   const cloud = draft.backend === "cloud";
   const backendName = cloud ? "BreezeBlue 官方" : "本地 API";
   $("backend-label").textContent = backendName;

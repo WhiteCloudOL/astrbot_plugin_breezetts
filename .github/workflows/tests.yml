@@ -19,10 +19,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install -r requirements-dev.txt
-      - run: python -m ruff format --check .
-      - run: python -m ruff check .
-      - run: python -m pytest -q
+      - run: python -m pip install -r requirements.txt "pytest>=8,<10" "pytest-asyncio>=0.24,<2" "ruff>=0.11"
+      - run: python -m ruff format --isolated --target-version py310 --check .
+      - run: python -m ruff check --isolated --target-version py310 --select E,F,W,I,UP,ASYNC,C4,Q --ignore E501,ASYNC230,ASYNC240 .
+      - run: python -m pytest -o asyncio_mode=auto -o asyncio_default_fixture_loop_scope=function -q tests
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

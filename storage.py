@@ -289,16 +289,31 @@ class AudioStore:
             self.persist()
             raise
 
-    def prune(self, limit: int) -> None:
+    def prune(
+        self, limit: int, preserve: set[str] | None = None, max_bytes: int | None = None
+    ) -> None:
         """Keep the newest outputs and previews while retaining all references.
 
         Args:
             limit: Maximum number of generated audio files to retain.
+            preserve: Audio identifiers currently reserved for delivery.
+            max_bytes: Maximum total size of generated files, excluding references.
         """
         generated = sorted(
             (item for item in self.items.values() if item["kind"] != "reference"),
             key=lambda item: item["created"],
             reverse=True,
         )
-        for item in generated[limit:]:
-            self.remove(item["id"])
+        preserve = preserve or set()
+        kept = sum(item["id"] in preserve for item in generated)
+        size = sum(item["size"] for item in generated if item["id"] in preserve)
+        for item in generated:
+            if item["id"] in preserve:
+                continue
+            if kept >= limit or (
+                max_bytes is not None and size + item["size"] > max_bytes
+            ):
+                self.remove(item["id"])
+            else:
+                kept += 1
+                size += item["size"]

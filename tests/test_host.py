@@ -93,7 +93,7 @@ async def test_load_reload_and_resources(loaded_plugin):
     from astrbot.core.star.star_handler import star_handlers_registry
 
     handlers = star_handlers_registry.get_handlers_by_module_name(current.module_path)
-    assert len(handlers) == 3
+    assert len(handlers) == 9
 
 
 @pytest.fixture
@@ -223,6 +223,40 @@ async def test_invalid_web_inputs_and_audio_boundaries(host_http, wav_audio, cap
     assert "private-key-test" not in caplog.text
 
 
+async def test_chunk_reads_protect_audio_during_history_cleanup(host_http):
+    import io
+    import wave
+
+    client, auth, plugin, _ = host_http
+    target = io.BytesIO()
+    with wave.open(target, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(24000)
+        audio.writeframes(b"\x01\x00" * 24000 * 20)
+    store = plugin.service.store
+    first = store.add(target.getvalue(), "wav", "output", "Playing")
+    root = "/api/v1/plugins/extensions/astrbot_plugin_breezetts/"
+    response = await client.get(
+        root + "audio/chunk", headers=auth, params={"id": first["id"]}
+    )
+    assert response.status_code == 200
+    assert first["id"] in plugin.service.reading_audio
+    second = store.add(target.getvalue(), "wav", "output", "New")
+    async with plugin.service.lock:
+        await plugin.service.prune_audio(1, {second["id"]})
+    assert store.path(first["id"]).exists() and store.path(second["id"]).exists()
+    # Finishing one reader keeps the grace lease for another concurrent reader.
+    response = await client.get(
+        root + "audio/chunk", headers=auth, params={"id": first["id"], "offset": 524288}
+    )
+    assert response.status_code == 200 and first["id"] in plugin.service.reading_audio
+    plugin.service.reading_audio.clear()
+    async with plugin.service.lock:
+        await plugin.service.prune_audio(1)
+    assert set(store.items) == {second["id"]}
+
+
 async def test_real_message_command_and_auto_reply(loaded_plugin, server, caplog):
     from aiohttp import web
     from astrbot.api.event import MessageEventResult, ResultContentType
@@ -259,10 +293,12 @@ async def test_real_message_command_and_auto_reply(loaded_plugin, server, caplog
     results = [result async for result in plugin.speak(event)]
     assert len(results) == 1 and isinstance(results[0].chain[0], Record)
     assert results[0].chain[0].text == "你好 hello world"
+    await plugin.release_speech_audio(event)
+    event.set_extra("breezetts_speech_turn", None)
     plugin.config["behavior"].update(auto_tts=True, keep_text=False)
     event.set_result(
         MessageEventResult(
-            chain=[Plain("你好 hello world")],
+            chain=[Plain("<breeze_tts>你好 hello world</breeze_tts>")],
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
@@ -271,8 +307,9 @@ async def test_real_message_command_and_auto_reply(loaded_plugin, server, caplog
         event.get_result().chain[0], Record
     )
     event.send = AsyncMock(side_effect=RuntimeError("private-platform-message"))
+    event.set_extra("breezetts_speech_turn", None)
     outcome = await plugin.breeze_tts(event, "你好 hello world")
-    assert "发送失败" in outcome
+    assert "delivery failed" in outcome
     count = len(plugin.service.store.items)
     event.set_result(
         MessageEventResult(
@@ -284,11 +321,11 @@ async def test_real_message_command_and_auto_reply(loaded_plugin, server, caplog
     assert len(plugin.service.store.items) == count
     assert isinstance(event.get_result().chain[0], Plain)
     assert "private-platform-message" not in caplog.text
-    event.set_extra("breezetts_voice_sent", False)
+    event.set_extra("breezetts_speech_turn", None)
     plugin.config["local"]["base_url"] = "http://127.0.0.1:1"
     event.set_result(
         MessageEventResult(
-            chain=[Plain("你好 hello world")],
+            chain=[Plain("<tts>你好 hello world</tts>")],
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
@@ -508,7 +545,11 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await expect(
                 frame.locator('[data-config="behavior.auto_tts"]')
             ).to_be_checked()
+            await expect(frame.locator("#trigger-probability")).to_be_enabled()
+            await frame.locator("#trigger-probability").fill("35")
+            await frame.locator("#history-max-mb").fill("128")
             await frame.locator('[data-config="behavior.auto_tts"]').uncheck()
+            await expect(frame.locator("#trigger-probability")).to_be_disabled()
             await frame.locator("#clear-cloud-key").click()
             await expect(frame.locator("#cloud-key-state")).to_have_text(
                 "密钥已清空 · 保存后生效"
@@ -516,6 +557,9 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await frame.locator("#save").click()
             await expect(frame.locator("#save-state")).to_have_text("配置已保存")
             assert plugin.config["cloud"]["api_key"] == ""
+            assert plugin.config["behavior"]["trigger_probability"] == 35
+            assert plugin.config["behavior"]["history_max_mb"] == 128
+            await expect(frame.locator("#cache-usage")).to_contain_text("MiB")
             await frame.locator("#cloud-key").fill("browser-test-key")
             await frame.locator("#save").click()
             await expect(frame.locator("#save-state")).to_have_text("配置已保存")

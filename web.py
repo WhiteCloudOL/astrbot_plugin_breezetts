@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import time
 from functools import wraps
 
 from astrbot.api.web import error_response, file_response, json_response, request
@@ -193,6 +194,11 @@ class WorkbenchAPI:
             raise BreezeError("删除请求须为 JSON 对象。")
         await self.service.start()
         async with self.service.lock:
+            if (
+                isinstance(payload.get("id"), str)
+                and self.service.delivery_audio.get(payload["id"], 0) > time.monotonic()
+            ):
+                raise BreezeError("该音频正在发送，请稍后再删除。")
             if payload.get("id") == self.service.settings()["local"]["reference_id"]:
                 raise BreezeError("该录音正在作为默认音色使用，请先更换默认音色。")
             assert self.service.store is not None
@@ -211,6 +217,8 @@ class WorkbenchAPI:
             if not path.is_file():
                 raise BreezeError("音频文件不存在，请刷新列表。")
             extension = store.items[audio_id]["extension"]
+            if store.items[audio_id]["kind"] != "reference":
+                self.service.reading_audio[audio_id] = time.monotonic() + 60
             return file_response(
                 path,
                 filename=f"breezetts-{audio_id[:8]}.{extension}",
@@ -246,6 +254,8 @@ class WorkbenchAPI:
             if path.stat().st_size != item["size"]:
                 raise BreezeError("音频文件与索引大小不一致，请重新上传或生成。")
             data = await self.service.io(read_chunk)
+            if item["kind"] != "reference":
+                self.service.reading_audio[audio_id] = time.monotonic() + 60
             return json_response(
                 {
                     "audio_base64": base64.b64encode(data).decode("ascii"),

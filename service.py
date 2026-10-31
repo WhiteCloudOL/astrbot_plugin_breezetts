@@ -31,6 +31,9 @@ class BreezeService:
         self.requests: set[asyncio.Task] = set()
         self.closed = False
         self.active = 0
+        self.delivery_audio: dict[str, float] = {}
+        self.reading_audio: dict[str, float] = {}
+        self.maintenance: asyncio.Task | None = None
 
     async def io(self, operation, *args, **kwargs):
         """Finish filesystem work before releasing its lock on cancellation.
@@ -60,12 +63,36 @@ class BreezeService:
                 raise BreezeError("插件正在关闭，请稍后重试。")
             if self.store is None:
                 self.store = await self.io(AudioStore, self.root)
+                await self.prune_audio(self.settings()["behavior"]["history_limit"])
             await self.client.start()
+            if self.maintenance is None:
+                self.maintenance = asyncio.create_task(
+                    self.maintain_audio(), name="breezetts-audio-cleanup"
+                )
+
+    async def maintain_audio(self) -> None:
+        """Apply retention after abandoned delivery and download leases expire."""
+        failed = False
+        while True:
+            await asyncio.sleep(60)
+            try:
+                async with self.lock:
+                    await self.prune_audio(self.settings()["behavior"]["history_limit"])
+                failed = False
+            except (OSError, BreezeError) as exc:
+                if not failed:
+                    self.logger.warning(
+                        "Breeze scheduled audio cleanup failed (%s).",
+                        type(exc).__name__,
+                    )
+                failed = True
 
     async def close(self) -> None:
         """Cancel and await owned jobs before closing the HTTP session."""
         self.closed = True
         tasks = list(set(self.tasks.values()) | self.requests)
+        if self.maintenance is not None:
+            tasks.append(self.maintenance)
         for task in tasks:
             task.cancel()
         if tasks:
@@ -150,6 +177,13 @@ class BreezeService:
                 raise BreezeError(
                     "配置保存失败，请检查数据目录写入权限。", code="storage"
                 ) from None
+            try:
+                await self.prune_audio(candidate["behavior"]["history_limit"])
+            except OSError as exc:
+                self.logger.warning(
+                    "Breeze settings saved; history cleanup failed (%s).",
+                    type(exc).__name__,
+                )
         return await self.state()
 
     async def connection(self) -> dict:
@@ -188,12 +222,15 @@ class BreezeService:
         except (TimeoutError, asyncio.TimeoutError):
             raise BreezeError("连接检查超时，请检查服务地址和网络。") from None
 
-    async def synthesize(self, text: str, *, config: dict | None = None) -> dict:
+    async def synthesize(
+        self, text: str, *, config: dict | None = None, for_delivery: bool = False
+    ) -> dict:
         """Generate and persist one audio file with bounded queueing and timeout.
 
         Args:
             text: Text to synthesize.
             config: Optional validated settings captured when a job was submitted.
+            for_delivery: Reserve the output until platform delivery completes.
 
         Returns:
             The generated audio record.
@@ -216,6 +253,13 @@ class BreezeService:
         self.active += 1
         reference = None
         try:
+            async with self.lock:
+                try:
+                    await self.prune_audio(self.settings()["behavior"]["history_limit"])
+                except OSError:
+                    raise BreezeError(
+                        "成品清理失败，请检查音频目录的写入与删除权限。", code="storage"
+                    ) from None
             if config["backend"] == "local" and config["local"]["mode"] == "reference":
                 async with self.lock:
                     assert self.store is not None
@@ -253,6 +297,23 @@ class BreezeService:
                 self.requests.discard(generation)
             async with self.lock:
                 assert self.store is not None
+                capacity = self.settings()["behavior"]["history_max_mb"] * 1024 * 1024
+                reserved_size = sum(
+                    item["size"]
+                    for key, item in self.store.items.items()
+                    if max(
+                        self.delivery_audio.get(key, 0), self.reading_audio.get(key, 0)
+                    )
+                    > time.monotonic()
+                )
+                if len(audio) + reserved_size > capacity:
+                    raise BreezeError(
+                        "待发送音频已占满成品容量，请等待发送完成或提高容量上限。"
+                    )
+                await self.prune_audio(
+                    max(self.settings()["behavior"]["history_limit"] - 1, 0),
+                    reserve_bytes=len(audio),
+                )
                 result = await self.io(
                     self.store.add,
                     audio,
@@ -261,8 +322,12 @@ class BreezeService:
                     text.strip()[:60],
                     backend=config["backend"],
                 )
+                if for_delivery:
+                    self.delivery_audio[result["id"]] = time.monotonic() + 3600
                 try:
-                    await self.io(self.store.prune, config["behavior"]["history_limit"])
+                    await self.prune_audio(
+                        self.settings()["behavior"]["history_limit"], {result["id"]}
+                    )
                 except OSError as exc:
                     self.logger.warning(
                         "Breeze output saved; history cleanup failed (%s).",
@@ -276,6 +341,51 @@ class BreezeService:
             ) from None
         finally:
             self.active -= 1
+
+    async def prune_audio(
+        self, limit: int, preserve: set[str] | None = None, reserve_bytes: int = 0
+    ) -> None:
+        """Prune history under the caller's storage lock, retaining active sends.
+
+        Args:
+            limit: Number of recent generated files to retain.
+            preserve: Newly created files that must survive this cleanup.
+            reserve_bytes: Capacity to free before writing newly downloaded audio.
+        """
+        self.delivery_audio = {
+            key: expiry
+            for key, expiry in self.delivery_audio.items()
+            if expiry > time.monotonic()
+        }
+        self.reading_audio = {
+            key: expiry
+            for key, expiry in self.reading_audio.items()
+            if expiry > time.monotonic()
+        }
+        assert self.store is not None
+        await self.io(
+            self.store.prune,
+            limit,
+            set(self.delivery_audio) | set(self.reading_audio) | (preserve or set()),
+            self.settings()["behavior"]["history_max_mb"] * 1024 * 1024 - reserve_bytes,
+        )
+
+    async def release_audio(self, identifiers: set[str]) -> None:
+        """Release delivered files and apply the configured history limit.
+
+        Args:
+            identifiers: Files reserved by the completed platform send.
+        """
+        async with self.lock:
+            for audio_id in identifiers:
+                self.delivery_audio.pop(audio_id, None)
+            if self.store is not None:
+                try:
+                    await self.prune_audio(self.settings()["behavior"]["history_limit"])
+                except (OSError, BreezeError) as exc:
+                    self.logger.warning(
+                        "Breeze delivery cleanup failed (%s).", type(exc).__name__
+                    )
 
     async def submit(self, operation: str, payload: dict) -> dict:
         """Start a tracked WebUI job so long requests survive bridge timeouts.
@@ -416,12 +526,35 @@ class BreezeService:
         if audio:
             async with self.lock:
                 assert self.store is not None
-                result["audio"] = await self.io(
-                    self.store.add, *audio, "preview", payload["name"]
+                capacity = self.settings()["behavior"]["history_max_mb"] * 1024 * 1024
+                reserved_size = sum(
+                    item["size"]
+                    for key, item in self.store.items.items()
+                    if max(
+                        self.delivery_audio.get(key, 0), self.reading_audio.get(key, 0)
+                    )
+                    > time.monotonic()
                 )
+                if len(audio[0]) + reserved_size > capacity:
+                    result["audio_unavailable"] = True
+                    self.logger.warning(
+                        "Breeze preview created; local audition capacity is occupied."
+                    )
+                    return result
                 try:
-                    await self.io(self.store.prune, config["behavior"]["history_limit"])
+                    await self.prune_audio(
+                        max(self.settings()["behavior"]["history_limit"] - 1, 0),
+                        reserve_bytes=len(audio[0]),
+                    )
+                    result["audio"] = await self.io(
+                        self.store.add, *audio, "preview", payload["name"]
+                    )
+                    await self.prune_audio(
+                        self.settings()["behavior"]["history_limit"],
+                        {result["audio"]["id"]},
+                    )
                 except OSError as exc:
+                    result["audio_unavailable"] = "audio" not in result
                     self.logger.warning(
                         "Breeze preview saved; history cleanup failed (%s).",
                         type(exc).__name__,
