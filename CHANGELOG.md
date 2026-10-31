@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.3 — 2026-10-31
+
+- Set the minimum supported AstrBot version to 4.26.0 and align installation instructions.
+- Use the official AstrBot logger when the host does not provide a plugin-specific logger.
+- Discover the workbench through the shared pages directory and support both Dashboard bridge names.
+
 ## v1.2.2 — 2026-10-31
 
 - Add temporary current-capability guidance for explicit voice requests while keeping ordinary text turns free of speech instructions.

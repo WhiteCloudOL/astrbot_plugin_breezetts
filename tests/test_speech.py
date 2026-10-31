@@ -4,7 +4,7 @@ import asyncio
 import copy
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -79,6 +79,7 @@ async def speech_plugin(loaded_plugin, server):  # noqa: F811
     host["provider_tts_settings"]["enable"] = False
     context.get_config = lambda *args, **kwargs: host
     context.get_using_tts_provider_async = AsyncMock(return_value=None)
+    context.get_using_tts_provider = Mock(return_value=None)
     context.send_message = AsyncMock()
     return plugin, calls, host
 

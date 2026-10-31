@@ -1,4 +1,4 @@
-const bridge = window.AstrBotPluginView;
+const bridge = window.AstrBotPluginView || window.AstrBotPluginPage;
 const $ = (id) => document.getElementById(id);
 let state;
 let draft;

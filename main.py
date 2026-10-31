@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from astrbot.api import AstrBotConfig
+from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Plain, Record
 from astrbot.api.provider import LLMResponse, ProviderRequest
@@ -27,6 +27,7 @@ class BreezeTTS(Star):
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
+        self.logger = getattr(self, "logger", logger)
         self.config = config
         self.service = BreezeService(
             config, StarTools.get_data_dir(PLUGIN_NAME), self.logger

@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-pytest.importorskip("astrbot", reason="Set PYTHONPATH to an AstrBot 4.29.3+ checkout")
+pytest.importorskip("astrbot", reason="Set PYTHONPATH to an AstrBot 4.26.0+ checkout")
 
 
 @pytest.fixture
@@ -380,7 +380,7 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
     _, auth, plugin, app = host_http
     manager, _, metadata = loaded_plugin
     page_service = PluginPageService(manager)
-    root = page_service.get_plugin_root_dir(metadata) / "views" / "studio"
+    root = page_service.get_plugin_root_dir(metadata) / "pages" / "studio"
     saved_previews = []
 
     async def upstream(request):
@@ -433,8 +433,11 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             return Response(status_code=404)
         if path.suffix == ".html":
             return HTMLResponse(
-                page_service.process_plugin_page_html(
-                    path.read_text(encoding="utf-8"), theme="light"
+                page_service.apply_theme_to_html(
+                    path.read_text(encoding="utf-8"), "light"
+                ).replace(
+                    "</body>",
+                    '<script src="/api/plugin/page/bridge-sdk.js"></script></body>',
                 )
             )
         return Response(

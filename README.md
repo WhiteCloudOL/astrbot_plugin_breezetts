@@ -21,7 +21,7 @@
 
 ## 安装与打开
 
-使用 AstrBot 4.29.3 或更新版本，在插件管理中通过仓库地址安装：
+使用 AstrBot 4.26.0 或更新版本，在插件管理中通过仓库地址安装：
 
 ```text
 https://github.com/WhiteCloudOL/astrbot_plugin_breezetts
