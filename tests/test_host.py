@@ -47,6 +47,7 @@ async def loaded_plugin(tmp_path, monkeypatch):
     config_dir.mkdir(parents=True)
     config = AstrBotConfig(str(tmp_path / "host.json"), default_config={})
     context = Context(asyncio.Queue(), config, *[MagicMock() for _ in range(9)])
+    context.astrbot_config_mgr.get_conf.return_value = config
     context.registered_web_apis = []
     preferences = SimpleNamespace(
         global_get=AsyncMock(
@@ -106,6 +107,7 @@ async def test_reload_upgrades_saved_behavior_settings(loaded_plugin):
         "private_trigger_probability",
         "group_trigger_probability",
         "min_interval_seconds",
+        "quote_keep_text",
     ):
         legacy["behavior"].pop(key)
     config_path = Path(first.config.config_path)
@@ -117,6 +119,7 @@ async def test_reload_upgrades_saved_behavior_settings(loaded_plugin):
     snapshot = await plugin.service.state()
     behavior = snapshot["config"]["behavior"]
     assert behavior["auto_tts"] and behavior["trigger_probability"] == 25
+    assert behavior["quote_keep_text"] is False
     assert behavior["private_trigger_probability"] == -1
     assert behavior["group_trigger_probability"] == -1
     assert behavior["min_interval_seconds"] == 90
@@ -292,7 +295,7 @@ async def test_chunk_reads_protect_audio_during_history_cleanup(host_http):
 async def test_real_message_command_and_auto_reply(loaded_plugin, server, caplog):
     from aiohttp import web
     from astrbot.api.event import MessageEventResult, ResultContentType
-    from astrbot.api.message_components import Plain, Record
+    from astrbot.api.message_components import Plain, Record, Reply
     from astrbot.api.provider import LLMResponse
     from astrbot.core.platform.astr_message_event import AstrMessageEvent
     from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
@@ -327,6 +330,10 @@ async def test_real_message_command_and_auto_reply(loaded_plugin, server, caplog
     results = [result async for result in plugin.speak(event)]
     assert len(results) == 1 and isinstance(results[0].chain[0], Record)
     assert results[0].chain[0].text == "你好 hello world"
+    results[0].chain.insert(0, Reply(id="source", sender_id="user"))
+    event.set_result(results[0])
+    await plugin.preserve_speech_order(event)
+    assert len(results[0].chain) == 1 and isinstance(results[0].chain[0], Record)
     await plugin.release_speech_audio(event)
     event.set_extra("breezetts_speech_turn", None)
     plugin.config["behavior"].update(auto_tts=True, keep_text=False)
@@ -644,6 +651,10 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             assert plugin.config["behavior"]["min_interval_seconds"] == 90
             await frame.locator("#speech-min-interval").fill("120")
             await frame.locator("#history-max-mb").fill("128")
+            await expect(
+                frame.locator('[data-config="behavior.quote_keep_text"]')
+            ).not_to_be_checked()
+            await frame.locator('[data-config="behavior.quote_keep_text"]').check()
             await frame.locator('[data-config="behavior.auto_tts"]').uncheck()
             await expect(frame.locator("#trigger-probability")).to_be_disabled()
             await frame.locator("#clear-cloud-key").click()
@@ -661,6 +672,7 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
                 "custom"
             )
             assert plugin.config["behavior"]["history_max_mb"] == 128
+            assert plugin.config["behavior"]["quote_keep_text"] is True
             await expect(frame.locator("#cache-usage")).to_contain_text("MiB")
             await frame.locator("#cloud-key").fill("browser-test-key")
             await frame.locator('[data-config="behavior.auto_tts"]').check()

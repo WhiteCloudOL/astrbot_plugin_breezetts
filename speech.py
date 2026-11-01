@@ -327,6 +327,11 @@ class SpeechDelivery:
         # A result may pass several decorators; never synthesize the same result twice.
         result._breezetts_processed = True
         config = self.service.settings()
+        quoted = any(isinstance(part, Reply) for part in result.chain) or bool(
+            self.context.get_config(event.unified_msg_origin)
+            .get("platform_settings", {})
+            .get("reply_with_quote", False)
+        )
         raw_text = "".join(
             part.text for part in result.chain if isinstance(part, Plain)
         )
@@ -400,6 +405,7 @@ class SpeechDelivery:
             return
         async with state.lock:
             allowed = (state.random_selected or state.autonomous) and not state.source
+            allowed = allowed and (not quoted or config["behavior"]["quote_keep_text"])
             program_selected = False
             if (
                 allowed
@@ -505,12 +511,15 @@ class SpeechDelivery:
                     state.audio_ids.add(item["id"])
                     assert self.service.store is not None
                     self.bind_delivery(event)
-                    chain.append(
-                        Record.fromFileSystem(
-                            self.service.store.path(item["id"]), text=text
-                        )
+                    record = Record.fromFileSystem(
+                        self.service.store.path(item["id"]), text=text
                     )
-                    if config["behavior"]["keep_text"]:
+                    if quoted:
+                        # Keep the quoted text on the normal segmentation path.
+                        await event.send(result.derive([record]))
+                    else:
+                        chain.append(record)
+                    if quoted or config["behavior"]["keep_text"]:
                         chain.append(component)
                 except BreezeError as exc:
                     self.logger.warning(

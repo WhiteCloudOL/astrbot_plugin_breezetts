@@ -19,6 +19,17 @@ def test_existing_local_settings_enable_random_seed_by_default():
     assert validated["local"]["seed"] == 77
 
 
+def test_quote_policy_defaults_and_validation():
+    config = copy.deepcopy(DEFAULTS)
+    config["behavior"].pop("quote_keep_text")
+    assert validate_config(config)["behavior"]["quote_keep_text"] is False
+    config["behavior"]["quote_keep_text"] = True
+    assert validate_config(config)["behavior"]["quote_keep_text"] is True
+    config["behavior"]["quote_keep_text"] = "false"
+    with pytest.raises(BreezeError, match="quote_keep_text"):
+        validate_config(config)
+
+
 @pytest.mark.parametrize("value", [None, 1, "true"])
 def test_random_seed_requires_a_boolean(value):
     config = copy.deepcopy(DEFAULTS)

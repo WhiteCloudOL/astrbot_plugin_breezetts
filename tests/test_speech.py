@@ -935,7 +935,13 @@ async def test_model_status_is_removed_without_voice_delivery(
 @pytest.mark.parametrize("group", [False, True])
 @pytest.mark.parametrize("forward_threshold", [100000, 10])
 async def test_onebot_random_voice_is_standalone_with_live_splitter_defaults(
-    speech_plugin, mode, keep_text, group, forward_threshold
+    speech_plugin,
+    mode,
+    keep_text,
+    group,
+    forward_threshold,
+    remaining_text=True,
+    quote_keep_text=None,
 ):
     """Check serialized adapter payloads rather than flattened component counts."""
     from astrbot.core.pipeline.respond.stage import RespondStage
@@ -946,6 +952,8 @@ async def test_onebot_random_voice_is_standalone_with_live_splitter_defaults(
 
     plugin, calls, host = speech_plugin
     plugin.config["behavior"]["keep_text"] = keep_text
+    if quote_keep_text is not None:
+        plugin.config["behavior"]["quote_keep_text"] = quote_keep_text
     host["platform_settings"]["segmented_reply"].update(
         enable=mode == "native",
         interval="0,0",
@@ -993,10 +1001,24 @@ async def test_onebot_random_voice_is_standalone_with_live_splitter_defaults(
     )
     event.plugins_name = ["astrbot_plugin_breezetts"]
     first = "今天的午饭吃得怎么样呀？"
-    rest = "我们可以慢慢聊，你想从哪件事说起呢～"
+    rest = "我们可以慢慢聊，你想从哪件事说起呢～" if remaining_text else ""
     event.set_result(
         MessageEventResult(
-            chain=[Plain(first + rest)],
+            chain=[
+                *(
+                    [
+                        Reply(
+                            id="789",
+                            sender_id="123",
+                            message_str="被引用的原文不参与朗读",
+                        )
+                    ]
+                    if quote_keep_text is not None
+                    else []
+                ),
+                *([At(qq="123")] if group and quote_keep_text is not None else []),
+                Plain(first + rest),
+            ],
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
@@ -1038,16 +1060,155 @@ async def test_onebot_random_voice_is_standalone_with_live_splitter_defaults(
     await respond.process(event)
 
     voices = [p for p in payloads if any(c["type"] == "record" for c in p)]
-    assert len(voices) == 1
-    assert len(voices[0]) == 1
-    assert voices[0][0]["data"]["file"].startswith("base64://UklGR")
+    assert len(voices) == (0 if quote_keep_text is False else 1)
+    if voices:
+        assert len(voices[0]) == 1
+        assert voices[0][0]["data"]["file"].startswith("base64://UklGR")
     captions = "".join(
         c["data"]["text"] for p in payloads for c in p if c["type"] == "text"
     )
-    assert captions == (first if keep_text else "") + rest
+    assert (
+        captions.strip()
+        == (first if keep_text or quote_keep_text is not None else "") + rest
+    )
     assert "[语音]" not in captions
-    assert calls == [first]
+    for payload in payloads:
+        assert any(
+            part["type"] not in {"reply", "at", "text"}
+            or part["type"] == "text"
+            and part["data"]["text"].strip()
+            for part in payload
+        ), "Voice conversion must not leave a quote-only or mention-only message"
+    if quote_keep_text is not None:
+        quoted = [p for p in payloads if any(c["type"] == "reply" for c in p)]
+        assert len(quoted) == 1
+        assert any(c["type"] == "text" and c["data"]["text"].strip() for c in quoted[0])
+    assert calls == ([] if quote_keep_text is False else [first])
     assert not plugin.service.delivery_audio
+
+
+@pytest.mark.parametrize("mode", ["off", "native", "splitter"])
+@pytest.mark.parametrize("quote_keep_text", [False, True])
+@pytest.mark.parametrize("remaining_text", [False, True])
+async def test_onebot_quoted_reply_policy(
+    speech_plugin, mode, quote_keep_text, remaining_text
+):
+    await test_onebot_random_voice_is_standalone_with_live_splitter_defaults(
+        speech_plugin,
+        mode,
+        False,
+        True,
+        100000,
+        remaining_text=remaining_text,
+        quote_keep_text=quote_keep_text,
+    )
+
+
+@pytest.mark.parametrize("segmented", [False, True])
+@pytest.mark.parametrize("keep_text", [False, True])
+@pytest.mark.parametrize("quote_keep_text", [False, True])
+async def test_quote_added_after_synthesis_never_leaves_an_empty_bubble(
+    speech_plugin, event_factory, segmented, keep_text, quote_keep_text
+):
+    from astrbot.core.pipeline.respond.stage import RespondStage
+    from astrbot.core.pipeline.result_decorate.stage import ResultDecorateStage
+
+    plugin, calls, host = speech_plugin
+    plugin.config["behavior"].update(
+        keep_text=keep_text, quote_keep_text=quote_keep_text
+    )
+    host["platform_settings"]["segmented_reply"].update(
+        enable=segmented, interval="0,0"
+    )
+    event = event_factory()
+    text = "这句话是机器人自己的回复。"
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain(text)], result_content_type=ResultContentType.LLM_RESULT
+        )
+    )
+    await decorate_model_result(plugin, event)
+    event.get_result().chain[:0] = [
+        Reply(id="original", sender_id="user"),
+        At(qq="user"),
+    ]
+    pipeline = SimpleNamespace(
+        astrbot_config=host, plugin_manager=SimpleNamespace(context=plugin.context)
+    )
+    decorate, respond = ResultDecorateStage(), RespondStage()
+    await decorate.initialize(pipeline)
+    await respond.initialize(pipeline)
+    async for _ in decorate.process(event):
+        pass
+    await respond.process(event)
+    assert calls == [text]
+    assert sum(
+        isinstance(part, Record) for chain in event.sent for part in chain
+    ) == int(quote_keep_text)
+    assert (
+        "".join(
+            part.text
+            for chain in event.sent
+            for part in chain
+            if isinstance(part, Plain)
+        )
+        == text
+    )
+    assert all(
+        any(
+            isinstance(part, Record) or isinstance(part, Plain) and part.text.strip()
+            for part in chain
+        )
+        for chain in event.sent
+    )
+    quoted = [
+        chain for chain in event.sent if any(isinstance(part, Reply) for part in chain)
+    ]
+    assert len(quoted) == 1 and any(
+        isinstance(part, Plain) and part.text == text for part in quoted[0]
+    )
+    assert not plugin.service.delivery_audio
+
+
+@pytest.mark.parametrize("quote_keep_text", [False, True])
+async def test_framework_quote_setting_keeps_the_reply_body(
+    speech_plugin, event_factory, quote_keep_text
+):
+    from astrbot.core.pipeline.respond.stage import RespondStage
+    from astrbot.core.pipeline.result_decorate.stage import ResultDecorateStage
+
+    plugin, calls, host = speech_plugin
+    plugin.config["behavior"]["quote_keep_text"] = quote_keep_text
+    host["platform_settings"]["reply_with_quote"] = True
+    event = event_factory()
+    text = "这段回复应当和引用保存在一起。"
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain(text)], result_content_type=ResultContentType.LLM_RESULT
+        )
+    )
+    await plugin.clean_speech_response(
+        event, LLMResponse(role="assistant", completion_text=text)
+    )
+    pipeline = SimpleNamespace(
+        astrbot_config=host, plugin_manager=SimpleNamespace(context=plugin.context)
+    )
+    decorate, respond = ResultDecorateStage(), RespondStage()
+    await decorate.initialize(pipeline)
+    await respond.initialize(pipeline)
+    async for _ in decorate.process(event):
+        pass
+    await respond.process(event)
+    assert calls == ([text] if quote_keep_text else [])
+    quoted = [
+        chain for chain in event.sent if any(isinstance(part, Reply) for part in chain)
+    ]
+    assert len(quoted) == 1 and any(
+        isinstance(part, Plain) and part.text == text for part in quoted[0]
+    )
+    assert sum(
+        isinstance(part, Record) for chain in event.sent for part in chain
+    ) == int(quote_keep_text)
 
 
 @pytest.mark.parametrize(
@@ -1078,6 +1239,35 @@ async def test_delivery_guard_releases_audio_on_failure_without_replay(
     assert sender.await_count == 1
     assert chain.chain == original
     assert not plugin.service.delivery_audio
+
+
+@pytest.mark.parametrize("late_quote", [False, True])
+async def test_quoted_voice_send_failure_preserves_text(
+    speech_plugin, event_factory, late_quote, caplog
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"]["quote_keep_text"] = True
+    event = event_factory()
+    event.send = AsyncMock(side_effect=RuntimeError("private-platform-error"))
+    text = "语音失败后仍然保留这段引用正文。"
+    quote = Reply(id="original", sender_id="user")
+    event.set_result(
+        MessageEventResult(
+            chain=[*([] if late_quote else [quote]), Plain(text)],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await decorate_model_result(plugin, event)
+    if late_quote:
+        event.get_result().chain.insert(0, quote)
+        await plugin.preserve_speech_order(event)
+    result = event.get_result()
+    assert result.get_plain_text() == text
+    assert any(isinstance(part, Reply) for part in result.chain)
+    assert not any(isinstance(part, Record) for part in result.chain)
+    assert calls == [text]
+    assert not plugin.service.delivery_audio
+    assert "private-platform-error" not in caplog.text
 
 
 async def test_platform_guard_covers_cached_context_senders_and_ignores_foreign_audio(

@@ -206,6 +206,12 @@
         "hint": "0–3600，随机语音和 LLM 工具共享间隔；同轮内的不同片段可连续发送。",
         "default": 90
       },
+      "quote_keep_text": {
+        "description": "引用回复保留文字与语音",
+        "type": "bool",
+        "default": false,
+        "hint": "关闭时带引用的回复保持文字；开启时保留引用正文，并独立发送正文语音。被引用的原消息不参与合成。"
+      },
       "keep_text": {
         "type": "bool",
         "description": "保留朗读片段文字",

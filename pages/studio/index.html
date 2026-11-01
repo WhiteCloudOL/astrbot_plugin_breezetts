@@ -37,7 +37,7 @@
         <div class="sidebar-bottom">
           <span class="status-dot"></span
           ><span id="backend-label">本地 API</span
-          ><small>清蒸云鸭 · v1.3.1<br />AGPL-3.0</small>
+          ><small>清蒸云鸭 · v1.3.2<br />AGPL-3.0</small>
         </div>
       </aside>
       <main id="main-content" tabindex="-1">
@@ -572,6 +572,11 @@
                 <span>LLM 自主语音</span>
                 <input data-config="behavior.tool_enabled" type="checkbox" role="switch" class="switch" />
               </label>
+              <label class="switch-row">
+                <span>引用回复保留文字与语音</span>
+                <input data-config="behavior.quote_keep_text" type="checkbox" role="switch" class="switch" />
+              </label>
+              <small>默认让带引用的回复保持文字；开启后保留引用正文并独立发送语音，被引用的原消息不参与合成</small>
               <small>模型通过语音工具自主选择朗读内容；语音回合使用完整回复处理，文字支持普通发送、AstrBot 默认分段和分段插件</small>
               <label for="max-characters">单次文字上限</label>
               <input id="max-characters" data-config="behavior.max_characters" type="number" min="1" max="2000" />

@@ -40,6 +40,7 @@ DEFAULTS = {
         "group_trigger_probability": -1,
         "min_interval_seconds": 90,
         "keep_text": True,
+        "quote_keep_text": False,
         "tool_enabled": True,
         "max_characters": 1000,
         "timeout": 600,

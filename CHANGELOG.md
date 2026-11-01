@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.2 — 2026-11-01
+
+- Keep quoted replies as text by default, with an optional workbench switch to retain their body and send its speech independently.
+- Preserve quotation targets and reply text across native and optional third-party segmentation, including quotes added after synthesis.
+- Avoid routing-only bubbles when separating speech and keep explicit synthesis commands available.
+- Retain the quoted body when audio delivery fails and synthesize only the bot's own words.
+
 ## v1.3.1 — 2026-11-01
 
 - Deliver Breeze audio independently at the platform boundary while preserving surrounding text, native segmentation, and optional splitters.

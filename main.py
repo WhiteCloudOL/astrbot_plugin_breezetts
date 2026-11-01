@@ -7,7 +7,7 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Plain, Record
+from astrbot.api.message_components import At, AtAll, Plain, Record, Reply
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.message import TextPart
@@ -82,7 +82,9 @@ class BreezeTTS(Star):
             return
         try:
             item = await self.service.synthesize(parts[1], for_delivery=True)
-            self.speech.turn(event).audio_ids.add(item["id"])
+            state = self.speech.turn(event)
+            state.audio_ids.add(item["id"])
+            state.source = "command"
             assert self.service.store is not None
             yield event.chain_result(
                 [
@@ -293,6 +295,47 @@ class BreezeTTS(Star):
         state = event.get_extra(TURN_KEY)
         if result is None or not result.chain or not state or not state.audio_ids:
             return
+        if state.source in {"random", "tags"} and any(
+            isinstance(part, Reply) for part in result.chain
+        ):
+            # A later decorator may add a quote after speech selection.
+            keep_voice = self.service.settings()["behavior"]["quote_keep_text"]
+            for component in result.chain[:]:
+                if not (
+                    isinstance(component, Record)
+                    and component.path
+                    and Path(component.path).stem in state.audio_ids
+                ):
+                    continue
+                if keep_voice:
+                    try:
+                        await event.send(result.derive([component]))
+                    except Exception as exc:
+                        self.logger.warning(
+                            "Breeze quoted voice delivery failed (%s); retaining text.",
+                            type(exc).__name__,
+                        )
+                index = result.chain.index(component)
+                if component.text and not (
+                    index + 1 < len(result.chain)
+                    and isinstance(result.chain[index + 1], Plain)
+                    and result.chain[index + 1].text == component.text
+                ):
+                    result.chain[index] = Plain(component.text)
+                else:
+                    result.chain.pop(index)
+        if not any(
+            isinstance(part, Plain)
+            and part.text.strip()
+            or not isinstance(part, (Plain, Record, Reply, At, AtAll))
+            for part in result.chain
+        ):
+            # Voice-only replies have no text or media to carry routing headers.
+            result.chain[:] = [
+                part
+                for part in result.chain
+                if not isinstance(part, (Reply, At, AtAll))
+            ]
         settings = self.context.get_config(event.unified_msg_origin).get(
             "platform_settings", {}
         )
@@ -317,8 +360,13 @@ class BreezeTTS(Star):
                 and component.path
                 and Path(component.path).stem in state.audio_ids
             ):
-                if index:
-                    prefix = result.chain[:index]
+                prefix = result.chain[:index]
+                if any(
+                    isinstance(part, Plain)
+                    and part.text.strip()
+                    or not isinstance(part, (Plain, Reply, At, AtAll))
+                    for part in prefix
+                ):
                     try:
                         await event.send(result.derive(prefix))
                         del result.chain[:index]
