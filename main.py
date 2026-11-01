@@ -205,7 +205,6 @@ class BreezeTTS(Star):
         """
         if resp is not None and isinstance(resp.completion_text, str):
             state = self.speech.turn(event)
-            state.model_response = state.model_response or resp.role == "assistant"
             raw = resp.completion_text
             if resp.result_chain and all(
                 isinstance(part, Plain) for part in resp.result_chain.chain
@@ -216,6 +215,10 @@ class BreezeTTS(Star):
             raw = cleaned
             if raw != "".join(text for text, _ in state.plan):
                 state.plan = parse_speech(raw)
+            state.model_response = state.model_response or (
+                resp.role == "assistant"
+                and bool("".join(text for text, _ in state.plan).strip())
+            )
             if resp.result_chain and any(
                 not isinstance(part, Plain) for part in resp.result_chain.chain
             ):

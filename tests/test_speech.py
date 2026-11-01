@@ -1287,3 +1287,26 @@ async def test_non_model_tool_result_stays_text_after_a_model_response(
     await plugin.auto_speak(event)
     assert calls == []
     assert result.get_plain_text() == "另一条固定工具返回文本。"
+
+
+async def test_empty_tool_call_is_not_dialogue_provenance(speech_plugin, event_factory):
+    plugin, calls, _ = speech_plugin
+    event = event_factory()
+    await plugin.clean_speech_response(
+        event,
+        LLMResponse(
+            role="assistant",
+            completion_text="",
+            tools_call_name=["status_tool"],
+            tools_call_args=[{}],
+        ),
+    )
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("固定工具返回文本。")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    assert calls == []
+    assert event.get_result().get_plain_text() == "固定工具返回文本。"
