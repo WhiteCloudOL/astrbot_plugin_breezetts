@@ -1108,12 +1108,13 @@ async def test_onebot_quoted_reply_policy(
 @pytest.mark.parametrize("keep_text", [False, True])
 @pytest.mark.parametrize("quote_keep_text", [False, True])
 async def test_quote_added_after_synthesis_never_leaves_an_empty_bubble(
-    speech_plugin, event_factory, segmented, keep_text, quote_keep_text
+    speech_plugin, event_factory, segmented, keep_text, quote_keep_text, caplog
 ):
     from astrbot.core.pipeline.respond.stage import RespondStage
     from astrbot.core.pipeline.result_decorate.stage import ResultDecorateStage
 
     plugin, calls, host = speech_plugin
+    caplog.set_level("INFO")
     plugin.config["behavior"].update(
         keep_text=keep_text, quote_keep_text=quote_keep_text
     )
@@ -1168,6 +1169,7 @@ async def test_quote_added_after_synthesis_never_leaves_an_empty_bubble(
         isinstance(part, Plain) and part.text == text for part in quoted[0]
     )
     assert not plugin.service.delivery_audio
+    assert ("reason=late_quote_text_only" in caplog.text) is not quote_keep_text
 
 
 @pytest.mark.parametrize("quote_keep_text", [False, True])
@@ -1500,3 +1502,125 @@ async def test_empty_tool_call_is_not_dialogue_provenance(speech_plugin, event_f
     await plugin.auto_speak(event)
     assert calls == []
     assert event.get_result().get_plain_text() == "固定工具返回文本。"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "quoted_reply_text_only",
+        "no_suitable_prose",
+        "cooldown_or_inflight",
+        "existing_audio",
+        "handled_by_tool",
+    ],
+)
+async def test_random_candidate_skip_reasons_preserve_the_reply(
+    speech_plugin, event_factory, caplog, reason
+):
+    plugin, calls, _ = speech_plugin
+    caplog.set_level("INFO")
+    event = event_factory()
+    state = plugin.speech.turn(event)
+    assert state.random_selected
+    text = "普通的回复正文。后面仍然保留文字。"
+    prefix = []
+    if reason == "quoted_reply_text_only":
+        prefix = [Reply(id="source", message_str="引用原文不参与朗读")]
+    elif reason == "no_suitable_prose":
+        text = "```python\nprint('hello')\n```\nhttps://example.com"
+    elif reason == "cooldown_or_inflight":
+        assert plugin.speech.frequency.acquire(state.session, object(), 0)
+    elif reason == "existing_audio":
+        prefix = [Record.fromFileSystem("foreign-audio.wav")]
+    elif reason == "handled_by_tool":
+        await plugin.breeze_tts(event, "已经通过工具发送的语音。")
+    event.set_result(
+        MessageEventResult(
+            chain=[*prefix, Plain(text)],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await decorate_model_result(plugin, event)
+    assert state.random_selected
+    assert (
+        "".join(
+            part.text for part in event.get_result().chain if isinstance(part, Plain)
+        )
+        == text
+    )
+    assert [
+        part for part in event.get_result().chain if not isinstance(part, Plain)
+    ] == prefix
+    assert len(calls) == int(reason == "handled_by_tool")
+    assert f"reason={reason}" in caplog.text
+    assert "Breeze speech prepared" not in caplog.text
+
+
+async def test_random_audio_submission_is_logged_once_at_nested_boundaries(
+    speech_plugin, event_factory, caplog
+):
+    plugin, calls, _ = speech_plugin
+    caplog.set_level("INFO")
+    sender = AsyncMock(return_value=True)
+    platform = SimpleNamespace(send_by_session=sender)
+    plugin.context.get_platform_inst = lambda _id: platform
+    event = event_factory()
+
+    async def send(message):
+        return await platform.send_by_session(event.session, message)
+
+    event.send = send
+    private_text = "这段正文应当发送一次语音。"
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain(private_text)],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await decorate_model_result(plugin, event)
+    assert plugin.speech.turn(event).random_selected
+    assert "Breeze speech prepared" in caplog.text
+    assert "Breeze audio submitted" not in caplog.text
+    await event.send(event.get_result())
+    assert len(calls) == 1
+    sender.assert_awaited_once()
+    assert len(sender.await_args.args[1].chain) == 1
+    assert isinstance(sender.await_args.args[1].chain[0], Record)
+    assert caplog.text.count("Breeze audio submitted") == 1
+    assert private_text not in caplog.text
+    assert not plugin.service.delivery_audio
+
+
+async def test_rejected_random_audio_is_not_logged_as_submitted(
+    speech_plugin, event_factory, caplog
+):
+    plugin, _, _ = speech_plugin
+    caplog.set_level("INFO")
+    event = event_factory()
+    event.send = AsyncMock(return_value=False)
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("这段随机正文会被平台拒绝。")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await decorate_model_result(plugin, event)
+    assert plugin.speech.turn(event).random_selected
+    with pytest.raises(RuntimeError, match="rejected"):
+        await event.send(event.get_result())
+    assert "Breeze audio submission failed" in caplog.text
+    assert "Breeze audio submitted" not in caplog.text
+    assert not plugin.service.delivery_audio
+
+
+async def test_random_opt_out_explains_why_selection_changed(
+    speech_plugin, event_factory, caplog
+):
+    plugin, calls, _ = speech_plugin
+    caplog.set_level("INFO")
+    event = event_factory("这次不要用语音回复")
+    assert plugin.speech.turn(event).random_selected
+    await plugin.prepare_speech_request(event, ProviderRequest())
+    assert not plugin.speech.turn(event).random_selected
+    assert "reason=user_opt_out" in caplog.text
+    assert not calls

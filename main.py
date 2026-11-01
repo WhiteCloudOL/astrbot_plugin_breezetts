@@ -154,6 +154,10 @@ class BreezeTTS(Star):
             current_text,
             re.I,
         ):
+            if state.random_selected:
+                self.logger.info(
+                    "Breeze speech skipped (reason=user_opt_out, source=random)."
+                )
             state.random_selected = state.autonomous = False
         # Turn-local opt-outs keep the tool catalog stable and reject execution instead.
         if req.func_tool and not self.service.settings()["behavior"]["tool_enabled"]:
@@ -315,6 +319,12 @@ class BreezeTTS(Star):
                             "Breeze quoted voice delivery failed (%s); retaining text.",
                             type(exc).__name__,
                         )
+                else:
+                    self.logger.info(
+                        "Breeze speech skipped (reason=late_quote_text_only, source=%s, audio_id=%s).",
+                        state.source,
+                        Path(component.path).stem,
+                    )
                 index = result.chain.index(component)
                 if component.text and not (
                     index + 1 < len(result.chain)

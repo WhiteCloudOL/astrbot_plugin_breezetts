@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.3 — 2026-11-01
+
+- Distinguish the random speech candidate from prepared audio and platform submission in diagnostics.
+- Explain skipped candidates at INFO level, including quotation policy, missing prose, tool handling, existing audio, concurrent reservations, and current-turn opt-outs.
+- Trace prepared and submitted audio by its identifier without recording spoken text, and report rejected submissions without a success entry.
+- Avoid duplicate submission diagnostics when event and platform delivery guards are nested.
+
 ## v1.3.2 — 2026-11-01
 
 - Keep quoted replies as text by default, with an optional workbench switch to retain their body and send its speech independently.

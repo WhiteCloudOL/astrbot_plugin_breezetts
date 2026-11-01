@@ -171,8 +171,24 @@ class SpeechDelivery:
                         "Breeze speech message was rejected by the sender"
                     )
                 delivered = True
+                for part in batch:
+                    if (
+                        isinstance(part, Record)
+                        and part.path
+                        and Path(part.path).stem in owned.values()
+                        and Path(part.path).stem in self.service.delivery_audio
+                    ):
+                        self.logger.info(
+                            "Breeze audio submitted (audio_id=%s).",
+                            Path(part.path).stem,
+                        )
         except Exception as exc:
             if not delivered:
+                self.logger.warning(
+                    "Breeze audio submission failed (audio_ids=%s, error=%s).",
+                    ",".join(owned.values()),
+                    type(exc).__name__,
+                )
                 raise
             self.logger.warning(
                 "Breeze message was partially delivered (%s); skipping whole-message replay.",
@@ -222,7 +238,7 @@ class SpeechDelivery:
                 and (probability == 100 or random.random() < probability / 100)
             )
             self.logger.debug(
-                "Breeze speech decision (probability=%s, random_selected=%s, autonomous=%s).",
+                "Breeze speech decision (probability=%s, random_selected=%s, autonomous=%s, stage=candidate).",
                 probability,
                 state.random_selected,
                 state.autonomous,
@@ -323,6 +339,14 @@ class SpeechDelivery:
             or state is None
             or not state.model_response
         ):
+            if (
+                state
+                and state.random_selected
+                and not getattr(result, "_breezetts_processed", False)
+            ):
+                self.logger.debug(
+                    "Breeze speech skipped (reason=no_model_reply, source=random)."
+                )
             return
         # A result may pass several decorators; never synthesize the same result twice.
         result._breezetts_processed = True
@@ -406,6 +430,20 @@ class SpeechDelivery:
         async with state.lock:
             allowed = (state.random_selected or state.autonomous) and not state.source
             allowed = allowed and (not quoted or config["behavior"]["quote_keep_text"])
+            if state.random_selected:
+                reason = (
+                    "handled_by_" + state.source
+                    if state.source
+                    else "quoted_reply_text_only"
+                    if quoted and not config["behavior"]["quote_keep_text"]
+                    else "existing_audio"
+                    if any(isinstance(part, Record) for part, _ in parts)
+                    else ""
+                )
+                if reason:
+                    self.logger.info(
+                        "Breeze speech skipped (reason=%s, source=random).", reason
+                    )
             program_selected = False
             if (
                 allowed
@@ -459,8 +497,8 @@ class SpeechDelivery:
                     program_selected = True
                     break
                 if not program_selected:
-                    self.logger.debug(
-                        "Breeze random speech skipped: no suitable prose passage."
+                    self.logger.info(
+                        "Breeze speech skipped (reason=no_suitable_prose, source=random)."
                     )
             spoken = 0
             chain = []
@@ -490,6 +528,10 @@ class SpeechDelivery:
                     or len(state.attempted) >= MAX_SPANS
                     or len(text) > config["behavior"]["max_characters"]
                 ):
+                    self.logger.info(
+                        "Breeze speech skipped (reason=invalid_or_repeated_span, source=%s).",
+                        "random" if program_selected else "tags",
+                    )
                     chain.append(component)
                     continue
                 if not self.frequency.acquire(
@@ -497,6 +539,10 @@ class SpeechDelivery:
                     state.token,
                     config["behavior"]["min_interval_seconds"],
                 ):
+                    self.logger.info(
+                        "Breeze speech skipped (reason=cooldown_or_inflight, source=%s).",
+                        "random" if program_selected else "tags",
+                    )
                     chain.append(component)
                     continue
                 state.attempted.add(key)
@@ -513,6 +559,12 @@ class SpeechDelivery:
                     self.bind_delivery(event)
                     record = Record.fromFileSystem(
                         self.service.store.path(item["id"]), text=text
+                    )
+                    self.logger.info(
+                        "Breeze speech prepared (source=%s, audio_id=%s, characters=%s).",
+                        state.source,
+                        item["id"],
+                        len(text),
                     )
                     if quoted:
                         # Keep the quoted text on the normal segmentation path.
