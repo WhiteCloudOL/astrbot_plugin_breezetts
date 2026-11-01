@@ -210,15 +210,14 @@ class BreezeTTS(Star):
                 isinstance(part, Plain) for part in resp.result_chain.chain
             ):
                 raw = "".join(part.text for part in resp.result_chain.chain)
+            state.model_response = state.model_response or (
+                resp.role == "assistant" and bool(raw.strip())
+            )
             cleaned = strip_delivery_ack(raw)
             state.status_cleaned = state.status_cleaned or cleaned != raw
             raw = cleaned
             if raw != "".join(text for text, _ in state.plan):
                 state.plan = parse_speech(raw)
-            state.model_response = state.model_response or (
-                resp.role == "assistant"
-                and bool("".join(text for text, _ in state.plan).strip())
-            )
             if resp.result_chain and any(
                 not isinstance(part, Plain) for part in resp.result_chain.chain
             ):
