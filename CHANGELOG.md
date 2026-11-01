@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.1 — 2026-11-01
+
+- Deliver Breeze audio independently at the platform boundary while preserving surrounding text, native segmentation, and optional splitters.
+- Release audio reservations after successful, failed, or cancelled delivery and prevent whole-message retries after a partial send.
+- Keep voice messages outside long-text forward cards.
+- Enable a fresh random seed for each local synthesis by default, with a workbench switch and optional fixed seed.
+- Inject temporary speech guidance after final tool-permission filters, preserving stable prompts and saved history.
+- Read voice requests from the current message rather than quoted content and honor explicit text-only replies.
+
 ## v1.3.0 — 2026-11-01
 
 - Execute random speech directly after the program's probability decision, selecting one bounded prose passage before message splitting.
