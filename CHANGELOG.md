@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.3.0 — 2026-11-01
+
+- Execute random speech directly after the program's probability decision, selecting one bounded prose passage before message splitting.
+- Keep autonomous tool calls compatible with random speech through shared cooldown, locking, and per-turn deduplication.
+- Preserve surrounding text, media, code, links, and lists while supporting ordinary delivery, native segmentation, and the splitter plugin.
+- Keep tool receipts internal and remove standalone delivery acknowledgments from model output and current-turn history.
+- Update probability controls, usage documentation, and debug diagnostics without adding random-speech instructions to LLM requests.
+
 ## v1.2.3 — 2026-10-31
 
 - Set the minimum supported AstrBot version to 4.26.0 and align installation instructions.

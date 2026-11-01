@@ -16,7 +16,7 @@ from astrbot.core.agent.tool import ToolSet
 from .service import BreezeService
 from .settings import BreezeError
 from .speech import TURN_KEY, SpeechDelivery
-from .speech_markup import parse_speech
+from .speech_markup import parse_speech, strip_delivery_ack
 from .web import WorkbenchAPI
 
 PLUGIN_NAME = "astrbot_plugin_breezetts"
@@ -108,6 +108,7 @@ class BreezeTTS(Star):
         actual delivery, including any configured text caption. Choose natural
         conversational content and describe speech availability from the tool result.
         After success, continue only with new content that has not been delivered.
+        Keep delivery acknowledgments and bracketed status messages out of dialogue.
 
         Args:
             text(string): The exact text to speak, up to the configured character limit.
@@ -129,7 +130,7 @@ class BreezeTTS(Star):
     async def prepare_speech_request(
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
-        """Describe speech only for random selection or an explicit voice request.
+        """Add temporary tool guidance for explicit voice requests.
 
         Args:
             event: Incoming event with its cached probability decision.
@@ -169,24 +170,16 @@ class BreezeTTS(Star):
                 re.I,
             )
         )
-        if (state.random_selected or voice_requested) and not state.source:
+        if voice_requested and not state.source:
             instruction = (
                 marker + "BreezeTTS 可通过工作台中的服务与音色配置合成并发送真实语音。"
                 "当前语音能力和发送结果以 breeze_tts 工具返回为准，旧对话中关于未配置语音的说法不代表当前状态。"
                 "请朗读自然的对话内容，成功发送后仅补充尚未发送的新内容。"
+                "发送结果是内部回执；保持角色对话，不回复发送状态或“（语音已发送）”之类的括号提示。"
             )
-            if voice_requested:
-                instruction += (
-                    "用户本轮明确请求语音，请调用 breeze_tts 工具发送选中的简短内容。"
-                )
-            else:
-                instruction += (
-                    "本轮可以用语音表达一小段适合朗读的内容。"
-                    "请自主选择最多一段简短、自然的口语，用 <breeze_tts>正文</breeze_tts> 包裹，"
-                    "其余内容保持普通文字；代码、网址和长篇列表保持文字。"
-                    "若本轮无需语音，直接使用普通文字。"
-                    "如果已调用 breeze_tts 工具发送语音，后续回复使用普通文字。"
-                )
+            instruction += (
+                "用户本轮明确请求语音，请调用 breeze_tts 工具发送选中的简短内容。"
+            )
             req.extra_user_content_parts.append(
                 TextPart(text=instruction + "</breezetts_turn>").mark_as_temp()
             )
@@ -208,6 +201,9 @@ class BreezeTTS(Star):
                 isinstance(part, Plain) for part in resp.result_chain.chain
             ):
                 raw = "".join(part.text for part in resp.result_chain.chain)
+            cleaned = strip_delivery_ack(raw)
+            state.status_cleaned = state.status_cleaned or cleaned != raw
+            raw = cleaned
             if raw != "".join(text for text, _ in state.plan):
                 state.plan = parse_speech(raw)
             if resp.result_chain and any(
@@ -217,6 +213,7 @@ class BreezeTTS(Star):
                 for part in resp.result_chain.chain:
                     if isinstance(part, Plain):
                         part.text = "".join(text for text, _ in parse_speech(part.text))
+                        part.text = strip_delivery_ack(part.text)
             else:
                 resp.completion_text = "".join(text for text, _ in state.plan)
 
@@ -229,6 +226,14 @@ class BreezeTTS(Star):
             run_context: Runner context containing assistant messages.
             resp: Final model response, already cleaned by the response hook.
         """
+        last_assistant = next(
+            (
+                message
+                for message in reversed(run_context.messages)
+                if message.role == "assistant"
+            ),
+            None,
+        )
         for message in run_context.messages:
             if message.role != "assistant":
                 continue
@@ -236,10 +241,25 @@ class BreezeTTS(Star):
                 message.content = "".join(
                     text for text, _ in parse_speech(message.content)
                 )
+                if message is last_assistant:
+                    message.content = strip_delivery_ack(message.content)
             elif isinstance(message.content, list):
+                if (
+                    message is last_assistant
+                    and all(isinstance(part, TextPart) for part in message.content)
+                    and message.content
+                ):
+                    text = strip_delivery_ack(
+                        "".join(part.text for part in message.content)
+                    )
+                    message.content[0].text = text
+                    for part in message.content[1:]:
+                        part.text = ""
                 for part in message.content:
                     if isinstance(part, TextPart):
                         part.text = "".join(text for text, _ in parse_speech(part.text))
+                        if message is last_assistant:
+                            part.text = strip_delivery_ack(part.text)
 
     @filter.on_decorating_result(priority=500)
     async def auto_speak(self, event: AstrMessageEvent):

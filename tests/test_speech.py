@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -11,7 +12,7 @@ import pytest
 pytest.importorskip("astrbot")
 
 from astrbot.api.event import MessageEventResult, ResultContentType
-from astrbot.api.message_components import Image, Plain, Record
+from astrbot.api.message_components import At, Image, Plain, Record, Reply
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.core.agent.message import Message, TextPart, dump_messages_with_checkpoints
 from astrbot.core.agent.tool import FunctionTool, ToolSet
@@ -151,8 +152,7 @@ async def test_probability_prompt_cache_and_tool_visibility(
     assert event.get_extra("enable_streaming") is False
     assert req.system_prompt == "Stable persona" and req.prompt == "Hello"
     assert req.contexts == [{"role": "assistant", "content": "History"}]
-    assert len(req.extra_user_content_parts) == 1
-    assert req.extra_user_content_parts[0]._no_save
+    assert req.extra_user_content_parts == []
     assert req.func_tool.get_tool("breeze_tts") is None
     assert tools.get_tool("breeze_tts") is tool
     dumped = dump_messages_with_checkpoints(
@@ -253,8 +253,9 @@ async def test_tool_and_random_coexist_deduplicate_and_isolate(
 
 @pytest.mark.parametrize("mode", ["none", "native", "splitter"])
 @pytest.mark.parametrize("keep_text", [False, True])
+@pytest.mark.parametrize("tagged", [False, True])
 async def test_real_decorate_and_send_pipeline(
-    speech_plugin, event_factory, run_model, mode, keep_text
+    speech_plugin, event_factory, run_model, mode, keep_text, tagged
 ):
     from astrbot.core.pipeline.respond.stage import RespondStage
     from astrbot.core.pipeline.result_decorate.stage import ResultDecorateStage
@@ -272,9 +273,12 @@ async def test_real_decorate_and_send_pipeline(
         content_cleanup_rule="",
     )
     host["platform_settings"]["forward_threshold"] = 0
+    body = "开头第一句。第二句。<breeze_tts>中间语音</breeze_tts>结尾第一句。第二句。"
+    if not tagged:
+        body = body.replace("<breeze_tts>", "").replace("</breeze_tts>", "")
     response = LLMResponse(
         role="assistant",
-        completion_text="开头第一句。第二句。<breeze_tts>中间语音</breeze_tts>结尾第一句。第二句。",
+        completion_text=body,
     )
     runner, provider = await run_model(event, [response])
     assert provider.text_chat.await_count == 1
@@ -330,14 +334,19 @@ async def test_real_decorate_and_send_pipeline(
     after = "".join(
         part.text for part in delivered[voice_index + 1 :] if isinstance(part, Plain)
     )
-    expected_before = "开头第一句。第二句。"
-    expected_after = ("中间语音" if keep_text else "") + "结尾第一句。第二句。"
+    expected_before = "开头第一句。第二句。" if tagged else ""
+    expected_after = (
+        ("中间语音" if keep_text else "") + "结尾第一句。第二句。"
+        if tagged
+        else ("开头第一句。" if keep_text else "")
+        + "第二句。中间语音结尾第一句。第二句。"
+    )
     if mode == "splitter":
         expected_before = expected_before.replace("。", "")
         expected_after = expected_after.replace("。", "")
     assert before == expected_before
     assert after == expected_after
-    assert calls == ["中间语音"]
+    assert calls == ["中间语音" if tagged else "开头第一句。"]
     assert not plugin.service.delivery_audio
 
 
@@ -451,7 +460,9 @@ async def test_disabled_and_over_limit_tags_are_clean_text(
         "".join(part.text for part in event.get_result().chain) == "文字未闭合"
         and calls == []
     )
-    plugin.config["behavior"].update(auto_tts=True, max_characters=1)
+    plugin.config["behavior"].update(
+        auto_tts=False, tool_enabled=True, max_characters=1
+    )
     event = event_factory()
     event.set_result(
         MessageEventResult(
@@ -487,7 +498,8 @@ async def test_private_group_probability_and_default(
         await plugin.prepare_speech_request(event, request)
         await plugin.prepare_speech_request(event, request)
     assert draw.call_count == 1
-    assert bool(request.extra_user_content_parts) is expected
+    assert plugin.speech.turn(event).random_selected is expected
+    assert request.extra_user_content_parts == []
 
 
 @pytest.mark.parametrize("probability,selected", [(0, False), (100, True)])
@@ -717,8 +729,9 @@ async def test_explicit_voice_agent_reports_delivery_and_finishes_once(
     result = next(
         message["content"] for message in history if message["role"] == "tool"
     )
-    assert "synthesis and platform delivery succeeded" in str(result)
-    assert ("text caption was also sent" in str(result)) is keep_text
+    receipt = json.loads(result)
+    assert receipt["status"] == "sent"
+    assert receipt["caption_sent"] is keep_text
     assert "breezetts_turn" not in str(history)
 
 
@@ -730,3 +743,169 @@ async def test_explicit_hint_requires_an_exposed_speech_tool(
     request = ProviderRequest(func_tool=ToolSet(tools=[]))
     await plugin.prepare_speech_request(event_factory("发个语音来"), request)
     assert request.extra_user_content_parts == []
+
+
+async def test_program_probability_converts_plain_replies_without_model_markers(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(trigger_probability=25, tool_enabled=False)
+    with patch("random.random", side_effect=[0.01, 0.24, 0.25, 0.99]) as draw:
+        for index in range(4):
+            event = event_factory()
+            request = ProviderRequest(system_prompt="Stable persona")
+            await plugin.prepare_speech(event)
+            await plugin.prepare_speech_request(event, request)
+            assert request.extra_user_content_parts == []
+            event.set_result(
+                MessageEventResult(
+                    chain=[Plain(f"第{index}轮普通回复。其余内容。")],
+                    result_content_type=ResultContentType.LLM_RESULT,
+                )
+            )
+            await plugin.auto_speak(event)
+            await plugin.auto_speak(event)
+            assert sum(
+                isinstance(part, Record) for part in event.get_result().chain
+            ) == int(index < 2)
+            await plugin.release_speech_audio(event)
+    assert draw.call_count == 4
+    assert calls == ["第0轮普通回复。", "第1轮普通回复。"]
+
+
+async def test_random_selection_spans_plain_components_and_preserves_media(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    event = event_factory()
+    image = Image.fromURL("https://example.com/image.png")
+    tail = Plain("后面的另一段文字。")
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("你"), Plain("好呀。其余文字。"), image, tail],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    chain = event.get_result().chain
+    assert calls == ["你好呀。"]
+    assert isinstance(chain[0], Record) and chain[1].text == "其余文字。"
+    assert chain[2] is image and chain[3] is tail
+    assert "already" in await plugin.breeze_tts(event, "再次调用")
+    assert calls == ["你好呀。"]
+    await plugin.release_speech_audio(event)
+
+
+@pytest.mark.parametrize("tool_first", [True, False])
+async def test_tool_and_program_random_share_one_voice_path(
+    speech_plugin, event_factory, tool_first
+):
+    plugin, calls, _ = speech_plugin
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("随机片段。剩下文字。")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    if tool_first:
+        await plugin.breeze_tts(event, "自主片段")
+        await plugin.auto_speak(event)
+        assert calls == ["自主片段"]
+    else:
+        await plugin.auto_speak(event)
+        assert "already" in await plugin.breeze_tts(event, "自主片段")
+        assert calls == ["随机片段。"]
+    await plugin.release_speech_audio(event)
+
+
+async def test_probability_miss_still_allows_autonomous_tool(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"]["trigger_probability"] = 0
+    event = event_factory()
+    assert not plugin.speech.turn(event).random_selected
+    assert json.loads(await plugin.breeze_tts(event, "自主语音"))["status"] == "sent"
+    assert calls == ["自主语音"]
+
+
+@pytest.mark.parametrize("segmented", [False, True])
+@pytest.mark.parametrize("status", ["（语音已发送）", "Voice message sent."])
+async def test_delivered_voice_removes_status_and_empty_quote_bubbles(
+    speech_plugin, event_factory, run_model, segmented, status
+):
+    from astrbot.core.pipeline.respond.stage import RespondStage
+    from astrbot.core.pipeline.result_decorate.stage import ResultDecorateStage
+
+    plugin, calls, host = speech_plugin
+    event = event_factory("发个语音来")
+    runner, _ = await run_model(
+        event,
+        [
+            LLMResponse(
+                role="assistant",
+                tools_call_name=["breeze_tts"],
+                tools_call_args=[{"text": "你好呀"}],
+                tools_call_ids=["voice-status"],
+            ),
+            LLMResponse(role="assistant", completion_text=status),
+        ],
+    )
+    assert runner.get_final_llm_resp().completion_text == ""
+    history = str(dump_messages_with_checkpoints(runner.run_context.messages))
+    assert status not in history
+    assert calls == ["你好呀"] and len(event.sent) == 1
+    # A downstream decorator may reintroduce the model's original status text.
+    event.set_result(
+        MessageEventResult(
+            chain=[Reply(id="source-message"), At(qq="user"), Plain(status)],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    host["platform_settings"].update(reply_with_quote=True, reply_with_mention=True)
+    host["platform_settings"]["segmented_reply"].update(
+        enable=segmented, interval="0,0"
+    )
+    pipeline = SimpleNamespace(
+        astrbot_config=host, plugin_manager=SimpleNamespace(context=plugin.context)
+    )
+    decorate, respond = ResultDecorateStage(), RespondStage()
+    await decorate.initialize(pipeline)
+    await respond.initialize(pipeline)
+    async for _ in decorate.process(event):
+        pass
+    await respond.process(event)
+    assert len(event.sent) == 1
+
+
+async def test_delivery_status_cleanup_preserves_new_dialogue_and_prior_history(
+    speech_plugin, event_factory
+):
+    plugin, _, _ = speech_plugin
+    event = event_factory()
+    await plugin.breeze_tts(event, "你好")
+    response = LLMResponse(
+        role="assistant", completion_text="（语音已发送）今晚想聊什么？"
+    )
+    await plugin.clean_speech_response(event, response)
+    assert response.completion_text == "今晚想聊什么？"
+    previous = Message(role="assistant", content="语音已发送")
+    current = Message(
+        role="assistant", content=[TextPart(text="（语音已"), TextPart(text="发送）")]
+    )
+    await plugin.clean_speech_history(
+        event, SimpleNamespace(messages=[previous, current]), response
+    )
+    assert previous.content == "语音已发送"
+    assert not "".join(part.text for part in current.content).strip()
+
+
+async def test_model_status_is_removed_without_voice_delivery(
+    speech_plugin, event_factory
+):
+    plugin, _, _ = speech_plugin
+    event = event_factory()
+    response = LLMResponse(role="assistant", completion_text="（语音已发送）")
+    await plugin.clean_speech_response(event, response)
+    assert response.completion_text == ""

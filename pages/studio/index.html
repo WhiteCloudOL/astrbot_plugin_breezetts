@@ -37,7 +37,7 @@
         <div class="sidebar-bottom">
           <span class="status-dot"></span
           ><span id="backend-label">本地 API</span
-          ><small>清蒸云鸭 · v1.2.3<br />AGPL-3.0</small>
+          ><small>清蒸云鸭 · v1.3.0<br />AGPL-3.0</small>
         </div>
       </aside>
       <main id="main-content" tabindex="-1">
@@ -519,10 +519,10 @@
                 <span>随机语音</span>
                 <input data-config="behavior.auto_tts" type="checkbox" role="switch" class="switch" />
               </label>
-              <small>每轮按概率让模型选取一小段适合朗读的内容，其余内容保留文字</small>
+              <small>程序每轮抽取一次概率，命中后自动朗读回复中的一小段，其余内容保留文字</small>
               <label for="trigger-probability">随机触发概率（%）</label>
               <input id="trigger-probability" data-config="behavior.trigger_probability" type="number" min="0" max="100" step="1" />
-              <small>默认 20%，每轮抽取一次；可与 LLM 自主语音一起开启</small>
+              <small>默认 20%，命中后自动执行；可与 LLM 自主语音一起开启，同轮共用去重</small>
               <div class="form-grid">
                 <div>
                   <label for="private-probability-mode">私聊随机概率</label>

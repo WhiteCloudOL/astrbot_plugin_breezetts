@@ -173,13 +173,13 @@
       "auto_tts": {
         "type": "bool",
         "description": "随机语音",
-        "hint": "每轮按概率邀请模型选取一小段朗读，与自主语音共享去重状态。",
+        "hint": "程序每轮抽取概率，命中后自动朗读回复中的一小段，与自主语音共享去重状态。",
         "default": false
       },
       "trigger_probability": {
         "type": "int",
         "description": "随机触发概率（%）",
-        "hint": "0–100，每轮只抽取一次；命中后由模型选择适合朗读的片段。",
+        "hint": "0–100，由程序每轮抽取一次；命中后自动合成合适的正文片段。",
         "default": 20
       },
       "private_trigger_probability": {

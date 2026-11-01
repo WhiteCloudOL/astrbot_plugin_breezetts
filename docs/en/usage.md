@@ -34,6 +34,8 @@ Boolean settings use accessible capsule switches. The player sits beside the com
 
 In Connection & Settings → Chat & Runtime, enable random speech and choose its probability, or enable autonomous LLM speech to let the model select passages through `breeze_tts`. Both modes share turn-local duplicate suppression. Selected passages become voice messages while ordinary text follows the current delivery mode: no splitting, AstrBot's built-in splitting, or the splitter plugin
 
+Random speech uses one program-side draw per turn and directly synthesizes a prose passage after a hit, bounded to 200 characters and the configured text limit. Other content follows the existing segmentation settings. Tool receipts stay internal, and standalone delivery acknowledgments are removed from model replies and the current turn's history
+
 The former automatic-reply speech option is now Random Speech, and Allow LLM Speech Tool is now Autonomous LLM Speech. Both remain in Chat & Runtime
 
 Private and group conversations can inherit the default probability or use separate values. The conversation interval defaults to 90 seconds and is shared by random speech and LLM tool calls. Different passages in one turn can follow one another; setting the interval to zero disables the cooldown

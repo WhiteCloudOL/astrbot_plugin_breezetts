@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import re
 import unicodedata
 from dataclasses import dataclass, field
 
 from astrbot.api.event import MessageChain
-from astrbot.api.message_components import Plain, Record
+from astrbot.api.message_components import At, AtAll, Plain, Record, Reply
 from astrbot.core.platform.message_type import MessageType
 
 from .settings import BreezeError
-from .speech_markup import ENCODED_TAG, TAG, parse_speech
+from .speech_markup import (
+    ENCODED_TAG,
+    TAG,
+    parse_speech,
+    select_spoken_span,
+    strip_delivery_ack,
+)
 from .speech_policy import SpeechFrequency
 
 TURN_KEY = "breezetts_speech_turn"
@@ -33,6 +40,7 @@ class SpeechTurn:
     source: str = ""
     audio_ids: set[str] = field(default_factory=set)
     plan: list[tuple[str, bool]] = field(default_factory=list)
+    status_cleaned: bool = False
 
 
 class SpeechDelivery:
@@ -79,6 +87,12 @@ class SpeechDelivery:
                 )
                 and (probability == 100 or random.random() < probability / 100)
             )
+            self.logger.debug(
+                "Breeze speech decision (probability=%s, random_selected=%s, autonomous=%s).",
+                probability,
+                state.random_selected,
+                state.autonomous,
+            )
             event.set_extra(TURN_KEY, state)
         return state
 
@@ -107,7 +121,7 @@ class SpeechDelivery:
             "。.!！?？\"'“” "
         )
         async with state.lock:
-            if key in state.attempted or state.source == "tags":
+            if key in state.attempted or state.source in {"tags", "random"}:
                 return "This turn's voice has already been handled. Continue with ordinary text."
             if len(state.attempted) >= MAX_SPANS:
                 return "The speech limit for this turn has been reached. Continue with ordinary text."
@@ -136,16 +150,13 @@ class SpeechDelivery:
                 delivered = True
                 if config["behavior"]["keep_text"]:
                     await event.send(MessageChain([Plain(text)]))
-                caption = (
-                    "Its text caption was also sent. "
-                    if config["behavior"]["keep_text"]
-                    else ""
-                )
-                return (
-                    "Voice message sent successfully; synthesis and platform delivery succeeded. "
-                    + caption
-                    + "The spoken passage is already delivered. Continue only with new remaining content; "
-                    "if nothing remains, finish without another message. Speech is available through this tool."
+                return json.dumps(
+                    {
+                        "status": "sent",
+                        "caption_sent": config["behavior"]["keep_text"],
+                        "next": "Continue only with new in-character dialogue. If complete, return empty text. "
+                        "Omit delivery acknowledgments, bracketed status messages, and repeated spoken words.",
+                    }
                 )
             except BreezeError as exc:
                 self.logger.warning("Breeze voice tool failed (code=%s).", exc.code)
@@ -204,6 +215,17 @@ class SpeechDelivery:
                 original.append(result.chain[index])
                 group += result.chain[index].text
                 index += 1
+            if result.is_llm_result():
+                cleaned = strip_delivery_ack(group)
+                if cleaned != group:
+                    state.status_cleaned = True
+                    parts.extend(
+                        (Plain(text), voice)
+                        for text, voice in parse_speech(cleaned)
+                        if text
+                    )
+                    offset += len(group)
+                    continue
             if TAG.search(group) or ENCODED_TAG.search(group):
                 parts.extend(
                     (Plain(text), voice) for text, voice in parse_speech(group) if text
@@ -228,12 +250,74 @@ class SpeechDelivery:
                 if cursor < len(group):
                     parts.append((Plain(group[cursor:]), False))
             offset += len(group)
+        if state.status_cleaned and not any(
+            (isinstance(part, Plain) and part.text.strip())
+            or not isinstance(part, (Plain, At, AtAll, Reply))
+            for part, _ in parts
+        ):
+            parts = []
         # Commit tag-free fallback before any I/O, including cancellation paths.
         result.chain[:] = [component for component, _ in parts]
         if not result.is_llm_result():
             return
         async with state.lock:
             allowed = (state.random_selected or state.autonomous) and not state.source
+            program_selected = False
+            if (
+                allowed
+                and state.random_selected
+                and not any(isinstance(part, Record) for part, _ in parts)
+                and not any(
+                    voice
+                    and 0
+                    < len(part.text.strip())
+                    <= config["behavior"]["max_characters"]
+                    for part, voice in parts
+                )
+            ):
+                index = 0
+                while index < len(parts):
+                    if not isinstance(parts[index][0], Plain):
+                        index += 1
+                        continue
+                    stop = index
+                    while stop < len(parts) and isinstance(parts[stop][0], Plain):
+                        stop += 1
+                    group = "".join(part.text for part, _ in parts[index:stop])
+                    span = select_spoken_span(
+                        group, config["behavior"]["max_characters"]
+                    )
+                    if span is None:
+                        index = stop
+                        continue
+                    start, end = span
+                    replacement = []
+                    cursor = 0
+                    inserted = False
+                    for part, _ in parts[index:stop]:
+                        following = cursor + len(part.text)
+                        if following <= start or cursor >= end:
+                            replacement.append((part, False))
+                        else:
+                            if cursor < start:
+                                replacement.append(
+                                    (Plain(part.text[: start - cursor]), False)
+                                )
+                            if not inserted:
+                                replacement.append((Plain(group[start:end]), True))
+                                inserted = True
+                            if following > end:
+                                replacement.append(
+                                    (Plain(part.text[end - cursor :]), False)
+                                )
+                        cursor = following
+                    parts[index:stop] = replacement
+                    program_selected = True
+                    break
+                if not program_selected:
+                    self.logger.debug(
+                        "Breeze random speech skipped: no suitable prose passage."
+                    )
             spoken = 0
             chain = []
             for component, voice in parts:
@@ -246,6 +330,13 @@ class SpeechDelivery:
                     chain.append(component)
                     continue
                 text = component.text.strip()
+                if program_selected:
+                    text = (
+                        text.replace("**", "")
+                        .replace("__", "")
+                        .replace("~~", "")
+                        .strip()
+                    )
                 key = re.sub(r"\s+", "", unicodedata.normalize("NFKC", text)).strip(
                     "。.!！?？\"'“” "
                 )
@@ -265,7 +356,7 @@ class SpeechDelivery:
                     chain.append(component)
                     continue
                 state.attempted.add(key)
-                state.source = "tags"
+                state.source = "random" if program_selected else "tags"
                 spoken += 1
                 generated = False
                 try:
