@@ -364,7 +364,19 @@
                     />
                   </div>
                   <div>
-                    <label for="seed">随机种子</label
+                    <label class="switch-row">
+                      <span>每次使用随机种子</span>
+                      <input
+                        id="random-seed"
+                        data-config="local.random_seed"
+                        type="checkbox"
+                        role="switch"
+                        class="switch"
+                      />
+                    </label>
+                    <small>每次合成自动生成种子；关闭后可填写固定种子</small>
+                    <div id="fixed-seed-field" hidden>
+                    <label for="seed">固定种子</label
                     ><input
                       id="seed"
                       data-config="local.seed"
@@ -373,6 +385,7 @@
                       max="4294967295"
                       step="1"
                     />
+                    </div>
                   </div>
                 </div>
                 <small

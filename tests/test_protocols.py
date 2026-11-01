@@ -6,11 +6,38 @@ import copy
 import io
 import threading
 import wave
+from unittest.mock import patch
 
 import pytest
 from aiohttp import web
 from breezetts_test.client import BreezeClient
 from breezetts_test.settings import BreezeError
+
+
+async def test_local_random_seed_changes_per_request_without_mutating_settings(
+    server, config
+):
+    seeds = []
+
+    async def handle(request):
+        fields = await request.post()
+        seeds.append(int(fields["seed"]))
+        return web.Response(body=b"\x00\x00", content_type="audio/pcm")
+
+    config["local"].update(base_url=await server(handle), mode="plain")
+    assert config["local"]["random_seed"] is True
+    client = BreezeClient()
+    try:
+        with patch(
+            "breezetts_test.client.secrets.randbits", side_effect=[0, 2**32 - 1]
+        ) as generate:
+            await client.synthesize(config, "First request")
+            await client.synthesize(config, "Second request")
+        assert seeds == [0, 2**32 - 1]
+        assert generate.call_count == 2
+        assert config["local"]["seed"] == 42
+    finally:
+        await client.close()
 
 
 @pytest.mark.parametrize("api_key", ["", "test-local-key"])
@@ -48,6 +75,7 @@ async def test_local_multipart_auth_and_pcm(server, config, wav_audio, api_key, 
         api_key=api_key,
         cfg_scale=4,
         seed=43,
+        random_seed=False,
         instruction="轻声",
     )
     client = BreezeClient()

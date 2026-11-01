@@ -10,6 +10,23 @@ from breezetts_test.settings import DEFAULTS, BreezeError, api_root, validate_co
 from breezetts_test.storage import AudioStore, playable_audio
 
 
+def test_existing_local_settings_enable_random_seed_by_default():
+    config = copy.deepcopy(DEFAULTS)
+    config["local"].pop("random_seed")
+    config["local"]["seed"] = 77
+    validated = validate_config(config)
+    assert validated["local"]["random_seed"] is True
+    assert validated["local"]["seed"] == 77
+
+
+@pytest.mark.parametrize("value", [None, 1, "true"])
+def test_random_seed_requires_a_boolean(value):
+    config = copy.deepcopy(DEFAULTS)
+    config["local"]["random_seed"] = value
+    with pytest.raises(BreezeError, match="random_seed"):
+        validate_config(config)
+
+
 @pytest.mark.parametrize(
     "url,expected",
     [

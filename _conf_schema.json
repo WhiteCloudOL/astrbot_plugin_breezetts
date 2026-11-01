@@ -56,10 +56,16 @@
         "hint": "普通朗读或纯音色复刻建议 1，带指令可尝试 4。",
         "default": 1.0
       },
+      "random_seed": {
+        "type": "bool",
+        "description": "每次使用随机种子",
+        "hint": "开启后每次本地合成自动生成种子；关闭后使用下方固定种子",
+        "default": true
+      },
       "seed": {
         "type": "int",
-        "description": "随机种子",
-        "hint": "同样输入与种子有助于复现声音。",
+        "description": "固定种子",
+        "hint": "关闭随机种子后生效；同样输入与种子有助于复现声音效果",
         "default": 42
       }
     }

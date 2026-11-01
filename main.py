@@ -127,7 +127,7 @@ class BreezeTTS(Star):
         if state.random_selected or state.autonomous:
             event.set_extra("enable_streaming", False)
 
-    @filter.on_llm_request(priority=-100000)
+    @filter.on_llm_request(priority=-(2**63))
     async def prepare_speech_request(
         self, event: AstrMessageEvent, req: ProviderRequest
     ) -> None:
@@ -138,11 +138,18 @@ class BreezeTTS(Star):
             req: Request whose stable system prompt and history stay unchanged.
         """
         state = self.speech.turn(event)
+        components = getattr(event.message_obj, "message", None)
+        current_text = (
+            "".join(part.text for part in components if isinstance(part, Plain))
+            if components
+            else event.message_str
+        )
         if re.search(
-            r"^\s*(?:请|这次|本次|这回|今天)?\s*(?:不要|别|不用|无需|不想|停止|关闭)"
+            r"^\s*(?:(?:请|麻烦|(?:这|本)(?:一)?(?:条|次|回|轮)(?:回复)?|今天|接下来|你|我|先)\s*)*"
+            r"(?:不要|别|不用|无需|不想|停止|关闭)"
             r"(?:再|给我|用|发|听|使用){0,2}(?:语音|朗读|声音)"
-            r"|^\s*(?:please\s+)?(?:don't|do not|stop).{0,12}(?:speak|voice|audio|read)\b",
-            event.message_str,
+            r"|(?:^|[.;?!\n])\s*(?:please\s+)?(?:don't|do not|stop).{0,12}(?:speak|voice|audio|read)\b",
+            current_text,
             re.I,
         ):
             state.random_selected = state.autonomous = False
@@ -167,10 +174,11 @@ class BreezeTTS(Star):
                 r"(?:发|来)(?:个|条|段|一条|一段|一下)?语音|用语音|语音(?:回复|说|读)"
                 r"|(?:想听|听听).{0,12}(?:声音|说话)|朗读|念给我听|读给我听"
                 r"|\b(?:speak|read.{0,20}aloud|say.{0,20}aloud|send.{0,12}(?:voice|audio))\b",
-                event.message_str,
+                current_text,
                 re.I,
             )
         )
+        # Final tool filters have run; temporary guidance matches executable tools.
         if voice_requested and not state.source:
             instruction = (
                 marker + "BreezeTTS 可通过工作台中的服务与音色配置合成并发送真实语音。"

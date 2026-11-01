@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import re
+import secrets
 from urllib.parse import quote
 
 import aiohttp
@@ -141,7 +142,9 @@ class BreezeClient:
                 "text": text,
                 "instruction": connection["instruction"],
                 "cfg_scale": connection["cfg_scale"],
-                "seed": connection["seed"],
+                "seed": secrets.randbits(32)
+                if connection["random_seed"]
+                else connection["seed"],
             }.items():
                 form.add_field(key, str(value))
             if connection["mode"] == "reference":

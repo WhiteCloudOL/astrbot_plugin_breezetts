@@ -76,6 +76,8 @@ function updateSummary() {
   const cacheMiB = generated.reduce((total, item) => total + item.size, 0) / 1024 / 1024;
   $("cache-usage").textContent = `当前成品与预览：${generated.length} 条 · ${cacheMiB.toFixed(1)} MiB`;
   $("trigger-probability").disabled = !draft.behavior.auto_tts;
+  $("fixed-seed-field").hidden = draft.local.random_seed;
+  $("seed").disabled = draft.local.random_seed;
   for (const scope of ["private", "group"]) {
     const inherit = draft.behavior[`${scope}_trigger_probability`] < 0;
     $(`${scope}-probability-mode`).value = inherit ? "inherit" : "custom";

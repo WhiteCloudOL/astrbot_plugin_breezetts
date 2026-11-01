@@ -16,6 +16,7 @@ DEFAULTS = {
         "reference_id": "",
         "instruction": "",
         "cfg_scale": 1.0,
+        "random_seed": True,
         "seed": 42,
     },
     "cloud": {

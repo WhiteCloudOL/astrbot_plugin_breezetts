@@ -11,8 +11,6 @@ import pytest
 
 pytest.importorskip("astrbot")
 
-from test_host import loaded_plugin  # noqa: F401
-
 from astrbot.api.event import MessageEventResult, ResultContentType
 from astrbot.api.message_components import At, Image, Plain, Record, Reply
 from astrbot.api.provider import LLMResponse, ProviderRequest
@@ -23,6 +21,7 @@ from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.platform_metadata import PlatformMetadata
+from test_host import loaded_plugin  # noqa: F401
 
 
 class CapturedEvent(AstrMessageEvent):
@@ -679,11 +678,19 @@ async def test_explicit_voice_hint_is_temporary_and_request_scoped(
     assert request.extra_user_content_parts == []
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "不要发语音，文字回复就行",
+        "这一条请不要用语音回复，文字就好",
+        "Reply normally; do not use voice",
+    ],
+)
 async def test_voice_opt_out_suppresses_random_and_tool_for_one_turn(
-    speech_plugin, event_factory
+    speech_plugin, event_factory, text
 ):
     plugin, calls, _ = speech_plugin
-    event = event_factory("不要发语音，文字回复就行")
+    event = event_factory(text)
     tool = FunctionTool(name="breeze_tts", description="Voice", parameters={})
     tools = ToolSet(tools=[tool])
     request = ProviderRequest(func_tool=tools)
@@ -1147,3 +1154,82 @@ async def test_caption_failure_after_voice_does_not_request_whole_message_retry(
     assert len(sender.await_args_list[0].args[0].chain) == 1
     assert isinstance(sender.await_args_list[0].args[0].chain[0], Record)
     assert not plugin.service.delivery_audio
+
+
+async def test_quoted_voice_request_does_not_inject_current_turn_hint(
+    speech_plugin, event_factory
+):
+    plugin, _, _ = speech_plugin
+    event = event_factory("这句话你怎么看")
+    event.message_str = "[引用消息：发条语音给我听] 这句话你怎么看"
+    tool = FunctionTool(name="breeze_tts", description="Voice", parameters={})
+    req = ProviderRequest(
+        system_prompt="Stable persona", func_tool=ToolSet(tools=[tool])
+    )
+    await plugin.prepare_speech_request(event, req)
+    assert not req.extra_user_content_parts
+    assert req.system_prompt == "Stable persona"
+
+
+@pytest.mark.parametrize("stale_hint", [False, True])
+async def test_guidance_runs_after_late_tool_scope_filter(
+    speech_plugin, event_factory, monkeypatch, stale_hint
+):
+    from astrbot.core.pipeline import context_utils
+    from astrbot.core.star.star_handler import (
+        EventType,
+        StarHandlerMetadata,
+        StarHandlerRegistry,
+        star_handlers_registry,
+    )
+
+    plugin, _, _ = speech_plugin
+    event = event_factory("发条语音给我听")
+    tool = FunctionTool(name="breeze_tts", description="Voice", parameters={})
+    original_tools = ToolSet(tools=[tool])
+    req = ProviderRequest(
+        prompt="Original user text",
+        system_prompt="Stable persona",
+        contexts=[{"role": "assistant", "content": "History"}],
+        func_tool=original_tools,
+    )
+    if stale_hint:
+        await plugin.prepare_speech_request(event, req)
+        assert len(req.extra_user_content_parts) == 1
+
+    registered = next(
+        handler
+        for handler in star_handlers_registry.get_handlers_by_event_type(
+            EventType.OnLLMRequestEvent
+        )
+        if handler.handler_name == "prepare_speech_request"
+    )
+
+    async def filter_tools(_event, request):
+        request.func_tool = ToolSet(
+            tools=[
+                item for item in request.func_tool.tools if item.name != "breeze_tts"
+            ]
+        )
+
+    registry = StarHandlerRegistry()
+    registry.append(registered)
+    registry.append(
+        StarHandlerMetadata(
+            event_type=EventType.OnLLMRequestEvent,
+            handler_full_name="test_late_tool_scope",
+            handler_name="late_tool_scope",
+            handler_module_path=registered.handler_module_path,
+            handler=filter_tools,
+            event_filters=[],
+            extras_configs={"priority": -250000},
+        )
+    )
+    monkeypatch.setattr(context_utils, "star_handlers_registry", registry)
+    await context_utils.call_event_hook(event, EventType.OnLLMRequestEvent, req)
+    assert req.func_tool.get_tool("breeze_tts") is None
+    assert not req.extra_user_content_parts
+    assert req.prompt == "Original user text"
+    assert req.system_prompt == "Stable persona"
+    assert req.contexts == [{"role": "assistant", "content": "History"}]
+    assert original_tools.get_tool("breeze_tts") is tool

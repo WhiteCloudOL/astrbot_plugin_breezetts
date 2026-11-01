@@ -588,6 +588,20 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
                 path=str(screenshot_dir / "studio-desktop.png"), full_page=True
             )
             await frame.get_by_role("button", name="连接与设置").click()
+            await expect(frame.locator("#random-seed")).to_be_checked()
+            await expect(frame.locator("#fixed-seed-field")).to_be_hidden()
+            await frame.locator("#random-seed").uncheck()
+            await expect(frame.locator("#seed")).to_be_visible()
+            await frame.locator("#seed").fill("123")
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            assert plugin.config["local"]["random_seed"] is False
+            assert plugin.config["local"]["seed"] == 123
+            await frame.locator("#random-seed").check()
+            await expect(frame.locator("#fixed-seed-field")).to_be_hidden()
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            assert plugin.config["local"]["random_seed"] is True
             await frame.locator("#backend").select_option("cloud")
             await frame.locator("#cloud-url").fill(base_url)
             await frame.locator("#cloud-key").fill("browser-test-key")
@@ -715,6 +729,17 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await capture_view("voices-official-mobile.png")
             await frame.locator('[data-page="settings"]').click()
             await frame.locator("#backend").select_option("local")
+            await expect(frame.locator("#random-seed")).to_be_checked()
+            await frame.locator("#random-seed").uncheck()
+            await expect(frame.locator("#seed")).to_be_visible()
+            assert await actual_frame.evaluate(
+                "document.documentElement.scrollWidth <= window.innerWidth"
+            )
+            await capture_view("settings-local-seed-mobile.png")
+            await page.set_viewport_size({"width": 1440, "height": 1040})
+            await capture_view("settings-local-seed-desktop.png")
+            await page.set_viewport_size({"width": 390, "height": 844})
+            await frame.locator("#random-seed").check()
             await frame.locator("#save").click()
             await frame.locator('[data-page="voices"]').click()
             await capture_view("voices-local-mobile.png")
