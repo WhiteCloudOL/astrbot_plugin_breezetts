@@ -11,6 +11,8 @@ import pytest
 
 pytest.importorskip("astrbot")
 
+from test_host import loaded_plugin  # noqa: F401
+
 from astrbot.api.event import MessageEventResult, ResultContentType
 from astrbot.api.message_components import At, Image, Plain, Record, Reply
 from astrbot.api.provider import LLMResponse, ProviderRequest
@@ -21,7 +23,6 @@ from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
 from astrbot.core.platform.message_type import MessageType
 from astrbot.core.platform.platform_metadata import PlatformMetadata
-from test_host import loaded_plugin  # noqa: F401
 
 
 class CapturedEvent(AstrMessageEvent):
@@ -909,3 +910,240 @@ async def test_model_status_is_removed_without_voice_delivery(
     response = LLMResponse(role="assistant", completion_text="（语音已发送）")
     await plugin.clean_speech_response(event, response)
     assert response.completion_text == ""
+
+
+@pytest.mark.parametrize("mode", ["off", "native", "splitter"])
+@pytest.mark.parametrize("keep_text", [False, True])
+@pytest.mark.parametrize("group", [False, True])
+@pytest.mark.parametrize("forward_threshold", [100000, 10])
+async def test_onebot_random_voice_is_standalone_with_live_splitter_defaults(
+    speech_plugin, mode, keep_text, group, forward_threshold
+):
+    """Check serialized adapter payloads rather than flattened component counts."""
+    from astrbot.core.pipeline.respond.stage import RespondStage
+    from astrbot.core.pipeline.result_decorate.stage import ResultDecorateStage
+    from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+        AiocqhttpMessageEvent,
+    )
+
+    plugin, calls, host = speech_plugin
+    plugin.config["behavior"]["keep_text"] = keep_text
+    host["platform_settings"]["segmented_reply"].update(
+        enable=mode == "native",
+        interval="0,0",
+        interval_method="random",
+        split_mode="regex",
+        regex=r".*?[。？！]+|.+$",
+        content_cleanup_rule="",
+    )
+    host["platform_settings"]["forward_threshold"] = forward_threshold
+    payloads = []
+
+    async def capture(**kwargs):
+        payloads.append(kwargs["message"])
+        return {"message_id": len(payloads)}
+
+    async def capture_forward(action, **kwargs):
+        assert action in {"send_group_forward_msg", "send_private_forward_msg"}
+        for node in kwargs["messages"]:
+            content = node["data"]["content"]
+            assert not any(c["type"] == "record" for c in content)
+            payloads.append(content)
+        return {"message_id": len(payloads)}
+
+    bot = SimpleNamespace(
+        send_private_msg=AsyncMock(side_effect=capture),
+        send_group_msg=AsyncMock(side_effect=capture),
+        call_action=AsyncMock(side_effect=capture_forward),
+    )
+    incoming = AstrBotMessage()
+    incoming.type = MessageType.GROUP_MESSAGE if group else MessageType.FRIEND_MESSAGE
+    incoming.sender = MessageMember("123", "User")
+    incoming.group_id = "456" if group else ""
+    incoming.message_id = "789"
+    incoming.message = [Plain("何意味")]
+    incoming.message_str = "何意味"
+    incoming.self_id = "999"
+    incoming.raw_message = {}
+    target = "456" if group else "123"
+    event = AiocqhttpMessageEvent(
+        incoming.message_str,
+        incoming,
+        PlatformMetadata("aiocqhttp", "test", "test"),
+        target,
+        bot,
+    )
+    event.plugins_name = ["astrbot_plugin_breezetts"]
+    first = "今天的午饭吃得怎么样呀？"
+    rest = "我们可以慢慢聊，你想从哪件事说起呢～"
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain(first + rest)],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+
+    if mode == "splitter":
+        module = pytest.importorskip("data.plugins.astrbot_plugin_splitter.main")
+
+        async def send_to_adapter(_session, chain):
+            await AiocqhttpMessageEvent.send_message(bot, chain, None, group, target)
+            return True
+
+        platform = SimpleNamespace(send_by_session=send_to_adapter)
+        plugin.context.get_platform_inst = lambda _id: platform
+
+        async def send_to_context(session, chain):
+            return await platform.send_by_session(session, chain)
+
+        plugin.context.send_message = send_to_context
+        splitter = module.MessageSplitterPlugin(
+            plugin.context,
+            {"basic_settings": {"enable_tts_for_segments": False}},
+        )
+        splitter._simple_overrides.update(delay_strategy="fixed", fixed_delay=0)
+        await plugin.auto_speak(event)
+        await splitter.on_decorating_result(event)
+
+    pipeline = SimpleNamespace(
+        astrbot_config=host, plugin_manager=SimpleNamespace(context=plugin.context)
+    )
+    decorate, respond = ResultDecorateStage(), RespondStage()
+    await decorate.initialize(pipeline)
+    await respond.initialize(pipeline)
+    async for _ in decorate.process(event):
+        pass
+    await respond.process(event)
+
+    voices = [p for p in payloads if any(c["type"] == "record" for c in p)]
+    assert len(voices) == 1
+    assert len(voices[0]) == 1
+    assert voices[0][0]["data"]["file"].startswith("base64://UklGR")
+    captions = "".join(
+        c["data"]["text"] for p in payloads for c in p if c["type"] == "text"
+    )
+    assert captions == (first if keep_text else "") + rest
+    assert "[语音]" not in captions
+    assert calls == [first]
+    assert not plugin.service.delivery_audio
+
+
+@pytest.mark.parametrize(
+    "failure", [RuntimeError("send failed"), asyncio.CancelledError(), False]
+)
+async def test_delivery_guard_releases_audio_on_failure_without_replay(
+    speech_plugin, event_factory, failure
+):
+    plugin, _, _ = speech_plugin
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("第一句说给你听。后面是普通文字。")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    chain = event.get_result()
+    original = list(chain.chain)
+    sender = (
+        AsyncMock(side_effect=failure)
+        if isinstance(failure, BaseException)
+        else AsyncMock(return_value=failure)
+    )
+    expected = type(failure) if isinstance(failure, BaseException) else RuntimeError
+    with pytest.raises(expected):
+        await plugin.speech.send_chain(sender, chain)
+    assert sender.await_count == 1
+    assert chain.chain == original
+    assert not plugin.service.delivery_audio
+
+
+async def test_platform_guard_covers_cached_context_senders_and_ignores_foreign_audio(
+    speech_plugin, event_factory
+):
+    plugin, _, _ = speech_plugin
+    original = AsyncMock(return_value=True)
+    platform = SimpleNamespace(send_by_session=original)
+    plugin.context.get_platform_inst = lambda _id: platform
+
+    async def cached_sender(chain):
+        return await platform.send_by_session("test:FriendMessage:123", chain)
+
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("第一句话有一点长，拿来朗读。后面还是普通文字。")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    record = next(c for c in event.get_result().chain if isinstance(c, Record))
+    mixed = MessageEventResult(
+        chain=[Reply(id="incoming"), At(qq="123"), record, Plain("保留的文字")],
+        use_markdown_=False,
+    )
+    await cached_sender(mixed)
+    delivered = [call.args[1] for call in original.await_args_list]
+    assert len(delivered) == 2
+    assert delivered[0].chain == [record]
+    assert [type(c) for c in delivered[1].chain] == [Reply, At, Plain]
+    assert all(chain.use_markdown_ is False for chain in delivered)
+    assert not plugin.service.delivery_audio
+
+    foreign = MessageEventResult(
+        chain=[Record.fromFileSystem("another-plugin.wav"), Plain("another plugin")]
+    )
+    await cached_sender(foreign)
+    assert original.await_args.args[1] is foreign
+    plugin.speech.close_delivery()
+    assert platform.send_by_session is original
+
+
+async def test_delivery_guard_reload_preserves_outer_wrapper_and_reuses_owner(
+    speech_plugin, event_factory
+):
+    plugin, _, _ = speech_plugin
+    original = AsyncMock(return_value=True)
+    platform = SimpleNamespace(send_by_session=original)
+    plugin.context.get_platform_inst = lambda _id: platform
+    event = event_factory()
+    plugin.speech.bind_delivery(event)
+    guard = platform.send_by_session
+
+    async def outer(session, chain):
+        return await guard(session, chain)
+
+    platform.send_by_session = outer
+    previous = plugin.speech
+    previous.close_delivery()
+    assert platform.send_by_session is outer
+    replacement = type(previous)(plugin.service, plugin.logger, plugin.context)
+    replacement.bind_delivery(event_factory())
+    assert platform.send_by_session is outer
+    assert platform._breezetts_delivery_guard["owner"] is replacement
+    replacement.close_delivery()
+    await platform.send_by_session(
+        "test:FriendMessage:123", MessageEventResult(chain=[Plain("unchanged")])
+    )
+    original.assert_awaited_once()
+
+
+async def test_caption_failure_after_voice_does_not_request_whole_message_retry(
+    speech_plugin, event_factory
+):
+    plugin, _, _ = speech_plugin
+    plugin.config["behavior"]["keep_text"] = True
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("这是一句完整的朗读内容。后面还有普通文字。")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    sender = AsyncMock(side_effect=[None, RuntimeError("caption rejected")])
+    assert await plugin.speech.send_chain(sender, event.get_result()) is True
+    assert sender.await_count == 2
+    assert len(sender.await_args_list[0].args[0].chain) == 1
+    assert isinstance(sender.await_args_list[0].args[0].chain[0], Record)
+    assert not plugin.service.delivery_audio

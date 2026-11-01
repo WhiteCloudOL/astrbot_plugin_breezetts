@@ -8,6 +8,7 @@ import random
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from astrbot.api.event import MessageChain
 from astrbot.api.message_components import At, AtAll, Plain, Record, Reply
@@ -44,12 +45,144 @@ class SpeechTurn:
 
 
 class SpeechDelivery:
-    """Adapt selective speech to AstrBot messages without changing host services."""
+    """Coordinate selective speech and owned audio at AstrBot delivery boundaries."""
 
-    def __init__(self, service, logger):
+    def __init__(self, service, logger, context):
         self.service = service
         self.logger = logger
+        self.context = context
         self.frequency = SpeechFrequency()
+        self.active = True
+        self.delivery_guards = []
+
+    def bind_delivery(self, event) -> None:
+        """Guard final sends without depending on any message splitter.
+
+        Args:
+            event: Event whose direct sends may contain this plugin's audio.
+        """
+        platform = self.context.get_platform_inst(event.get_platform_id())
+        if platform is not None:
+            state = getattr(platform, "_breezetts_delivery_guard", None)
+            if state is None:
+                original = platform.send_by_session
+                state = {"owner": self, "original": original}
+
+                async def send_message(session, message_chain):
+                    owner = state["owner"]
+                    if owner is None or not owner.active:
+                        return await original(session, message_chain)
+                    return await owner.send_chain(
+                        lambda part: original(session, part), message_chain
+                    )
+
+                state["wrapper"] = send_message
+                platform._breezetts_delivery_guard = state
+                platform.send_by_session = send_message
+            else:
+                state["owner"] = self
+            if not any(saved is state for _, saved in self.delivery_guards):
+                self.delivery_guards.append((platform, state))
+        if event.get_extra("breezetts_delivery_guard") is self:
+            return
+        original_send = event.send
+
+        async def send(message):
+            if not self.active:
+                return await original_send(message)
+            return await self.send_chain(original_send, message)
+
+        event.send = send
+        event.set_extra("breezetts_delivery_guard", self)
+
+    def close_delivery(self) -> None:
+        """Deactivate owned wrappers and preserve any later host wrappers."""
+        self.active = False
+        for platform, state in self.delivery_guards:
+            if state["owner"] is not self:
+                continue
+            state["owner"] = None
+            if platform.send_by_session is state["wrapper"]:
+                platform.send_by_session = state["original"]
+                del platform._breezetts_delivery_guard
+        self.delivery_guards.clear()
+
+    async def send_chain(self, sender, message):
+        """Send reserved Breeze audio alone while retaining surrounding content.
+
+        Args:
+            sender: Next sender in the host's existing delivery chain.
+            message: Message already processed by the host and optional plugins.
+
+        Returns:
+            The final sender result, or the original result for unrelated content.
+            A partially completed delivery returns True to prevent full replay.
+
+        Raises:
+            RuntimeError: A sender rejects a partitioned message.
+            Exception: The platform fails or delivery is cancelled.
+        """
+        owned = {}
+        for index, component in enumerate(getattr(message, "chain", []) or []):
+            if not isinstance(component, Record) or not component.path:
+                continue
+            path = Path(component.path)
+            if (
+                path.stem not in self.service.delivery_audio
+                or self.service.store is None
+            ):
+                continue
+            if path.resolve() == self.service.store.path(path.stem).resolve():
+                owned[index] = path.stem
+        if not owned:
+            return await sender(message)
+
+        batches = []
+        pending = []
+        for index, component in enumerate(message.chain):
+            if index not in owned:
+                pending.append(component)
+                continue
+            if any(
+                isinstance(part, Plain)
+                and part.text.strip()
+                or not isinstance(part, (Plain, Reply, At, AtAll))
+                for part in pending
+            ):
+                batches.append(pending)
+                pending = []
+            batches.append([component])
+        if any(
+            isinstance(part, Plain)
+            and part.text.strip()
+            or not isinstance(part, (Plain, Reply, At, AtAll))
+            for part in pending
+        ):
+            batches.append(pending)
+
+        outcome = None
+        delivered = False
+        try:
+            for batch in batches:
+                outcome = await sender(message.derive(batch))
+                if outcome is False:
+                    raise RuntimeError(
+                        "Breeze speech message was rejected by the sender"
+                    )
+                delivered = True
+        except Exception as exc:
+            if not delivered:
+                raise
+            self.logger.warning(
+                "Breeze message was partially delivered (%s); skipping whole-message replay.",
+                type(exc).__name__,
+            )
+            return True
+        finally:
+            pending_ids = set(owned.values()) & self.service.delivery_audio.keys()
+            if pending_ids:
+                await self.service.release_audio(pending_ids)
+        return outcome
 
     def turn(self, event) -> SpeechTurn:
         """Make one probability decision and reuse it throughout an event.
@@ -141,6 +274,7 @@ class SpeechDelivery:
                 generated = True
                 audio_ids.add(item["id"])
                 assert self.service.store is not None
+                self.bind_delivery(event)
                 chain = [
                     Record.fromFileSystem(
                         self.service.store.path(item["id"]), text=text
@@ -366,6 +500,7 @@ class SpeechDelivery:
                     generated = True
                     state.audio_ids.add(item["id"])
                     assert self.service.store is not None
+                    self.bind_delivery(event)
                     chain.append(
                         Record.fromFileSystem(
                             self.service.store.path(item["id"]), text=text

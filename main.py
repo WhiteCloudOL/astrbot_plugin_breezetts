@@ -33,7 +33,7 @@ class BreezeTTS(Star):
             config, StarTools.get_data_dir(PLUGIN_NAME), self.logger
         )
         self.web = WorkbenchAPI(self.service)
-        self.speech = SpeechDelivery(self.service, self.logger)
+        self.speech = SpeechDelivery(self.service, self.logger, context)
         for endpoint, handler, methods in (
             ("state", self.web.state, ["GET"]),
             ("settings", self.web.settings, ["POST"]),
@@ -58,6 +58,7 @@ class BreezeTTS(Star):
 
     async def terminate(self) -> None:
         """Release plugin-owned jobs, HTTP connections, and route registrations."""
+        self.speech.close_delivery()
         await self.service.close()
         # Remove only this instance's handlers, preserving a replacement on reload.
         self.context.registered_web_apis[:] = [
@@ -281,16 +282,23 @@ class BreezeTTS(Star):
         state = event.get_extra(TURN_KEY)
         if result is None or not result.chain or not state or not state.audio_ids:
             return
-        segmented = (
-            self.context.get_config(event.unified_msg_origin)
-            .get("platform_settings", {})
-            .get("segmented_reply", {})
+        settings = self.context.get_config(event.unified_msg_origin).get(
+            "platform_settings", {}
         )
-        if segmented.get("enable") and event.get_platform_name() not in {
-            "qq_official_webhook",
-            "weixin_official_account",
-            "dingtalk",
-        }:
+        segmented = settings.get("segmented_reply", {})
+        forward_audio = event.get_platform_name() == "aiocqhttp" and sum(
+            len(part.text) for part in result.chain if isinstance(part, Plain)
+        ) > settings.get("forward_threshold", 1500)
+        if (
+            not forward_audio
+            and segmented.get("enable")
+            and event.get_platform_name()
+            not in {
+                "qq_official_webhook",
+                "weixin_official_account",
+                "dingtalk",
+            }
+        ):
             return
         for index, component in enumerate(result.chain):
             if (
@@ -308,6 +316,22 @@ class BreezeTTS(Star):
                             "Breeze leading text delivery failed (%s).",
                             type(exc).__name__,
                         )
+                if forward_audio:
+                    # The host will wrap the remaining long text in a forward node.
+                    # Voice must leave before that node is built.
+                    result.chain.remove(component)
+                    try:
+                        await event.send(result.derive([component]))
+                    except Exception as exc:
+                        self.logger.error(
+                            "Breeze voice delivery before forwarding failed (%s).",
+                            type(exc).__name__,
+                        )
+                        if component.text and not any(
+                            isinstance(part, Plain) and component.text in part.text
+                            for part in result.chain
+                        ):
+                            result.chain.insert(0, Plain(component.text))
                 break
 
     @filter.after_message_sent()
