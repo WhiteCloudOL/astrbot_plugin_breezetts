@@ -572,12 +572,12 @@
                 <span>LLM 自主语音</span>
                 <input data-config="behavior.tool_enabled" type="checkbox" role="switch" class="switch" />
               </label>
+              <small>模型通过语音工具自主选择朗读内容；语音回合使用完整回复处理，文字支持普通发送、AstrBot 默认分段和分段插件</small>
               <label class="switch-row">
                 <span>引用回复保留文字与语音</span>
                 <input data-config="behavior.quote_keep_text" type="checkbox" role="switch" class="switch" />
               </label>
               <small>默认让带引用的回复保持文字；开启后保留引用正文并独立发送语音，被引用的原消息不参与合成</small>
-              <small>模型通过语音工具自主选择朗读内容；语音回合使用完整回复处理，文字支持普通发送、AstrBot 默认分段和分段插件</small>
               <label for="max-characters">单次文字上限</label>
               <input id="max-characters" data-config="behavior.max_characters" type="number" min="1" max="2000" />
               <small>官方默认账号上限 1000 字；提升上限前请确认账号权限。超限片段保持文字</small>
