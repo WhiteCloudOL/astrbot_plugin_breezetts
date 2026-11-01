@@ -8,6 +8,7 @@
 - Enable a fresh random seed for each local synthesis by default, with a workbench switch and optional fixed seed.
 - Inject temporary speech guidance after final tool-permission filters, preserving stable prompts and saved history.
 - Read voice requests from the current message rather than quoted content and honor explicit text-only replies.
+- Require a real model-response event before automatic narration, preserving fixed command replies even when their result type is mislabeled.
 
 ## v1.3.0 — 2026-11-01
 

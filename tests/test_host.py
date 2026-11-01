@@ -293,6 +293,7 @@ async def test_real_message_command_and_auto_reply(loaded_plugin, server, caplog
     from aiohttp import web
     from astrbot.api.event import MessageEventResult, ResultContentType
     from astrbot.api.message_components import Plain, Record
+    from astrbot.api.provider import LLMResponse
     from astrbot.core.platform.astr_message_event import AstrMessageEvent
     from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
     from astrbot.core.platform.message_type import MessageType
@@ -335,6 +336,12 @@ async def test_real_message_command_and_auto_reply(loaded_plugin, server, caplog
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
+    await plugin.clean_speech_response(
+        event,
+        LLMResponse(
+            role="assistant", completion_text=event.get_result().get_plain_text()
+        ),
+    )
     await plugin.auto_speak(event)
     assert len(event.get_result().chain) == 1 and isinstance(
         event.get_result().chain[0], Record
@@ -350,6 +357,12 @@ async def test_real_message_command_and_auto_reply(loaded_plugin, server, caplog
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
+    await plugin.clean_speech_response(
+        event,
+        LLMResponse(
+            role="assistant", completion_text=event.get_result().get_plain_text()
+        ),
+    )
     await plugin.auto_speak(event)
     assert len(plugin.service.store.items) == count
     assert isinstance(event.get_result().chain[0], Plain)
@@ -361,6 +374,12 @@ async def test_real_message_command_and_auto_reply(loaded_plugin, server, caplog
             chain=[Plain("<tts>你好 hello world</tts>")],
             result_content_type=ResultContentType.LLM_RESULT,
         )
+    )
+    await plugin.clean_speech_response(
+        event,
+        LLMResponse(
+            role="assistant", completion_text=event.get_result().get_plain_text()
+        ),
     )
     await plugin.auto_speak(event)
     assert isinstance(event.get_result().chain[0], Plain)

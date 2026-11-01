@@ -42,6 +42,7 @@ class SpeechTurn:
     audio_ids: set[str] = field(default_factory=set)
     plan: list[tuple[str, bool]] = field(default_factory=list)
     status_cleaned: bool = False
+    model_response: bool = False
 
 
 class SpeechDelivery:
@@ -313,15 +314,18 @@ class SpeechDelivery:
             event: Event containing a completed LLM message chain.
         """
         result = event.get_result()
+        state = event.get_extra(TURN_KEY)
         if (
             result is None
             or not result.chain
             or getattr(result, "_breezetts_processed", False)
+            or not result.is_llm_result()
+            or state is None
+            or not state.model_response
         ):
             return
         # A result may pass several decorators; never synthesize the same result twice.
         result._breezetts_processed = True
-        state = self.turn(event)
         config = self.service.settings()
         raw_text = "".join(
             part.text for part in result.chain if isinstance(part, Plain)

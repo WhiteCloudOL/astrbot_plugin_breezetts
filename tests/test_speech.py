@@ -34,6 +34,17 @@ class CapturedEvent(AstrMessageEvent):
         self.sent.append(copy.deepcopy(message.chain))
 
 
+async def decorate_model_result(plugin, event):
+    """Run the real model-response hook before testing model result decoration."""
+    result = event.get_result()
+    state = event.get_extra("breezetts_speech_turn")
+    if result and result.is_llm_result() and not (state and state.model_response):
+        await plugin.clean_speech_response(
+            event, LLMResponse(role="assistant", result_chain=copy.deepcopy(result))
+        )
+    await plugin.auto_speak(event)
+
+
 @pytest.fixture
 def event_factory():
     def make(
@@ -199,8 +210,8 @@ async def test_clean_history_selective_chain_and_failure(
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
-    await plugin.auto_speak(event)
-    await plugin.auto_speak(event)
+    await decorate_model_result(plugin, event)
+    await decorate_model_result(plugin, event)
     chain = event.get_result().chain
     assert [type(part) for part in chain] == [Plain, Record, Plain]
     assert [part.text for part in chain] == ["前面文字。", "只朗读这一句", "后面文字。"]
@@ -218,7 +229,7 @@ async def test_clean_history_selective_chain_and_failure(
             chain=[Plain(raw)], result_content_type=ResultContentType.LLM_RESULT
         )
     )
-    await plugin.auto_speak(event)
+    await decorate_model_result(plugin, event)
     assert all(isinstance(part, Plain) for part in event.get_result().chain)
     assert (
         "".join(part.text for part in event.get_result().chain)
@@ -243,7 +254,7 @@ async def test_tool_and_random_coexist_deduplicate_and_isolate(
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
-    await plugin.auto_speak(event)
+    await decorate_model_result(plugin, event)
     assert calls == ["你好"]
     assert "<" not in event.get_result().get_plain_text()
     other = event_factory()
@@ -312,7 +323,7 @@ async def test_real_decorate_and_send_pipeline(
             await event.send(MessageEventResult(chain=chain))
 
         splitter._send_proactive_segment = AsyncMock(side_effect=send_split)
-        await plugin.auto_speak(event)
+        await decorate_model_result(plugin, event)
         await splitter.on_decorating_result(event)
     pipeline = SimpleNamespace(
         astrbot_config=host, plugin_manager=SimpleNamespace(context=plugin.context)
@@ -380,7 +391,7 @@ async def test_agent_tool_execution_and_tag_followup_dedup(
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
-    await plugin.auto_speak(event)
+    await decorate_model_result(plugin, event)
     assert all(isinstance(part, Plain) for part in event.get_result().chain)
     assert calls == ["你好"]
     history = str(dump_messages_with_checkpoints(runner.run_context.messages))
@@ -416,7 +427,7 @@ async def test_agent_plain_turn_preserves_component_boundaries(
             chain=[first, second], result_content_type=ResultContentType.LLM_RESULT
         )
     )
-    await plugin.auto_speak(event)
+    await decorate_model_result(plugin, event)
     assert event.get_result().chain == [first, second] and calls == []
 
 
@@ -435,7 +446,7 @@ async def test_boundaries_components_and_one_tag_per_turn(speech_plugin, event_f
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
-    await plugin.auto_speak(event)
+    await decorate_model_result(plugin, event)
     chain = event.get_result().chain
     assert calls == ["第一句"] and chain[2] is image
     assert chain[3].text == "第二句" and chain[4].text == "后"
@@ -455,7 +466,7 @@ async def test_disabled_and_over_limit_tags_are_clean_text(
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
-    await plugin.auto_speak(event)
+    await decorate_model_result(plugin, event)
     assert (
         "".join(part.text for part in event.get_result().chain) == "文字未闭合"
         and calls == []
@@ -470,7 +481,7 @@ async def test_disabled_and_over_limit_tags_are_clean_text(
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
-    await plugin.auto_speak(event)
+    await decorate_model_result(plugin, event)
     assert event.get_result().get_plain_text() == "超过上限" and calls == []
 
 
@@ -537,7 +548,7 @@ async def test_cooldown_shared_by_tool_and_random_preserves_text(
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
-    await plugin.auto_speak(second)
+    await decorate_model_result(plugin, second)
     assert all(isinstance(part, Plain) for part in second.get_result().chain)
     assert "".join(part.text for part in second.get_result().chain) == "前第三句后"
     assert calls == ["第一句", "第二句"]
@@ -599,7 +610,7 @@ async def test_random_generation_cools_down_tool_calls(speech_plugin, event_fact
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
-    await plugin.auto_speak(event)
+    await decorate_model_result(plugin, event)
     assert sum(isinstance(part, Record) for part in event.get_result().chain) == 1
     assert "cooling down" in await plugin.breeze_tts(event_factory(), "工具片段")
     assert calls == ["随机片段"]
@@ -704,7 +715,7 @@ async def test_voice_opt_out_suppresses_random_and_tool_for_one_turn(
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
-    await plugin.auto_speak(event)
+    await decorate_model_result(plugin, event)
     assert calls == [] and event.get_result().get_plain_text() == "保留文字"
     assert "disabled" in await plugin.breeze_tts(event, "旧工具调用")
     assert calls == []
@@ -771,8 +782,8 @@ async def test_program_probability_converts_plain_replies_without_model_markers(
                     result_content_type=ResultContentType.LLM_RESULT,
                 )
             )
-            await plugin.auto_speak(event)
-            await plugin.auto_speak(event)
+            await decorate_model_result(plugin, event)
+            await decorate_model_result(plugin, event)
             assert sum(
                 isinstance(part, Record) for part in event.get_result().chain
             ) == int(index < 2)
@@ -794,7 +805,7 @@ async def test_random_selection_spans_plain_components_and_preserves_media(
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
-    await plugin.auto_speak(event)
+    await decorate_model_result(plugin, event)
     chain = event.get_result().chain
     assert calls == ["你好呀。"]
     assert isinstance(chain[0], Record) and chain[1].text == "其余文字。"
@@ -818,10 +829,10 @@ async def test_tool_and_program_random_share_one_voice_path(
     )
     if tool_first:
         await plugin.breeze_tts(event, "自主片段")
-        await plugin.auto_speak(event)
+        await decorate_model_result(plugin, event)
         assert calls == ["自主片段"]
     else:
-        await plugin.auto_speak(event)
+        await decorate_model_result(plugin, event)
         assert "already" in await plugin.breeze_tts(event, "自主片段")
         assert calls == ["随机片段。"]
     await plugin.release_speech_audio(event)
@@ -990,6 +1001,10 @@ async def test_onebot_random_voice_is_standalone_with_live_splitter_defaults(
         )
     )
 
+    await plugin.clean_speech_response(
+        event, LLMResponse(role="assistant", completion_text=first + rest)
+    )
+
     if mode == "splitter":
         module = pytest.importorskip("data.plugins.astrbot_plugin_splitter.main")
 
@@ -1009,7 +1024,7 @@ async def test_onebot_random_voice_is_standalone_with_live_splitter_defaults(
             {"basic_settings": {"enable_tts_for_segments": False}},
         )
         splitter._simple_overrides.update(delay_strategy="fixed", fixed_delay=0)
-        await plugin.auto_speak(event)
+        await decorate_model_result(plugin, event)
         await splitter.on_decorating_result(event)
 
     pipeline = SimpleNamespace(
@@ -1049,7 +1064,7 @@ async def test_delivery_guard_releases_audio_on_failure_without_replay(
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
-    await plugin.auto_speak(event)
+    await decorate_model_result(plugin, event)
     chain = event.get_result()
     original = list(chain.chain)
     sender = (
@@ -1083,7 +1098,7 @@ async def test_platform_guard_covers_cached_context_senders_and_ignores_foreign_
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
-    await plugin.auto_speak(event)
+    await decorate_model_result(plugin, event)
     record = next(c for c in event.get_result().chain if isinstance(c, Record))
     mixed = MessageEventResult(
         chain=[Reply(id="incoming"), At(qq="123"), record, Plain("保留的文字")],
@@ -1147,7 +1162,7 @@ async def test_caption_failure_after_voice_does_not_request_whole_message_retry(
             result_content_type=ResultContentType.LLM_RESULT,
         )
     )
-    await plugin.auto_speak(event)
+    await decorate_model_result(plugin, event)
     sender = AsyncMock(side_effect=[None, RuntimeError("caption rejected")])
     assert await plugin.speech.send_chain(sender, event.get_result()) is True
     assert sender.await_count == 2
@@ -1233,3 +1248,42 @@ async def test_guidance_runs_after_late_tool_scope_filter(
     assert req.system_prompt == "Stable persona"
     assert req.contexts == [{"role": "assistant", "content": "History"}]
     assert original_tools.get_tool("breeze_tts") is tool
+
+
+@pytest.mark.parametrize(
+    "kind", [ResultContentType.GENERAL_RESULT, ResultContentType.LLM_RESULT]
+)
+async def test_fixed_command_result_is_never_automatically_converted(
+    speech_plugin, event_factory, kind
+):
+    plugin, calls, _ = speech_plugin
+    event = event_factory("查询固定说明")
+    await plugin.prepare_speech(event)
+    text = "审核完成！\n访问地址 https://example.org/\n完整的使用说明。\n示例标签 <tts>保持原样</tts>"
+    result = MessageEventResult(
+        chain=[At(qq="123"), Plain(text)], result_content_type=kind
+    )
+    event.set_result(result)
+    await plugin.auto_speak(event)
+    assert calls == []
+    assert event.get_result() is result
+    assert result.get_plain_text() == text
+    assert [type(part) for part in result.chain] == [At, Plain]
+
+
+async def test_non_model_tool_result_stays_text_after_a_model_response(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    event = event_factory()
+    await plugin.clean_speech_response(
+        event, LLMResponse(role="assistant", completion_text="真实的模型回复")
+    )
+    result = MessageEventResult(
+        chain=[Plain("另一条固定工具返回文本。")],
+        result_content_type=ResultContentType.GENERAL_RESULT,
+    )
+    event.set_result(result)
+    await plugin.auto_speak(event)
+    assert calls == []
+    assert result.get_plain_text() == "另一条固定工具返回文本。"

@@ -205,6 +205,7 @@ class BreezeTTS(Star):
         """
         if resp is not None and isinstance(resp.completion_text, str):
             state = self.speech.turn(event)
+            state.model_response = state.model_response or resp.role == "assistant"
             raw = resp.completion_text
             if resp.result_chain and all(
                 isinstance(part, Plain) for part in resp.result_chain.chain
