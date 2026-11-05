@@ -76,6 +76,8 @@ function updateSummary() {
   const cacheMiB = generated.reduce((total, item) => total + item.size, 0) / 1024 / 1024;
   $("cache-usage").textContent = `当前成品与预览：${generated.length} 条 · ${cacheMiB.toFixed(1)} MiB`;
   $("trigger-probability").disabled = !draft.behavior.auto_tts;
+  $("random-tone-adaptive").disabled = !draft.behavior.auto_tts || !draft.behavior.dynamic_tone;
+  $("tone-provider").disabled = !draft.behavior.auto_tts || !draft.behavior.dynamic_tone || !draft.behavior.random_tone_adaptive;
   $("fixed-seed-field").hidden = draft.local.random_seed;
   $("seed").disabled = draft.local.random_seed;
   for (const scope of ["private", "group"]) {
@@ -129,6 +131,10 @@ function updateSummary() {
 }
 
 function fillSettings() {
+  const providers = new Map((state.llm_providers || []).map((provider) => [provider.id, provider.name]));
+  if (draft.behavior.tone_provider_id && !providers.has(draft.behavior.tone_provider_id))
+    providers.set(draft.behavior.tone_provider_id, `${draft.behavior.tone_provider_id}（当前不可用）`);
+  $("tone-provider").replaceChildren(new Option("跟随当前会话模型", ""), ...Array.from(providers, ([id, name]) => new Option(name, id)));
   document.querySelectorAll("[data-config]").forEach((element) => {
     const parts = element.dataset.config.split(".");
     const value =

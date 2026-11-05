@@ -2,6 +2,8 @@
 
 import re
 
+from .breeze_control import clean_breeze_text
+
 TAG = re.compile(
     r"<\s*/?\s*(?:breeze[_-]tts|tts)\b[^<>]*>|<\s*/?\s*(?:breeze[_-]tts|tts)\b", re.I
 )
@@ -14,16 +16,21 @@ DELIVERY_ACK = (
 )
 
 
-def parse_speech(text: str) -> list[tuple[str, bool]]:
+def parse_speech(
+    text: str, *, preserve_controls: bool = False
+) -> list[tuple[str, bool]]:
     """Remove speech markup and mark only balanced spoken blocks.
 
     Args:
         text: Model output, including optional speech tags.
+        preserve_controls: Keep Breeze controls for synthesis planning only.
 
     Returns:
         Ordered text spans and whether each is eligible for synthesis. Incomplete
         blocks retain their text, nested blocks form one span, and code stays text.
     """
+    if not preserve_controls:
+        text = clean_breeze_text(text)
     text = ENCODED_TAG.sub(lambda match: f"<{match[1]}>", text)
     parts: list[tuple[str, bool]] = []
     pending = ""

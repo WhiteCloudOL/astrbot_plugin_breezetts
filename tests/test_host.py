@@ -82,6 +82,8 @@ async def test_load_reload_and_resources(loaded_plugin):
         len(tools) == 1
         and tools[0].parameters["properties"]["text"]["type"] == "string"
     )
+    assert tools[0].parameters["properties"]["instruction"]["type"] == "string"
+    assert "instruction" not in tools[0].parameters.get("required", [])
     first = metadata.star_cls
     session = first.service.client.session
     ok, error = await manager.reload(metadata.name)
@@ -328,7 +330,8 @@ async def test_real_message_command_and_auto_reply(loaded_plugin, server, caplog
         "test-session",
     )
     results = [result async for result in plugin.speak(event)]
-    assert len(results) == 1 and isinstance(results[0].chain[0], Record)
+    assert len(results) == 2 and isinstance(results.pop(0).chain[0], Plain)
+    assert isinstance(results[0].chain[0], Record)
     assert results[0].chain[0].text == "你好 hello world"
     results[0].chain.insert(0, Reply(id="source", sender_id="user"))
     event.set_result(results[0])

@@ -536,6 +536,20 @@
               <label for="trigger-probability">随机触发概率（%）</label>
               <input id="trigger-probability" data-config="behavior.trigger_probability" type="number" min="0" max="100" step="1" />
               <small>默认 20%，命中后自动执行；可与 LLM 自主语音一起开启，同轮共用去重</small>
+              <label class="switch-row">
+                <span>启用动态语调</span>
+                <input id="dynamic-tone" data-config="behavior.dynamic_tone" type="checkbox" role="switch" class="switch" />
+              </label>
+              <small>开启后支持 [语气:温柔]、[轻笑]、[耳语]、[唱歌]、[停顿] 和工具 instruction。关闭时忽略动态控制，使用默认语气，聊天文字隐藏控制标记</small>
+              <label class="switch-row">
+                <span>概率语音 LLM 语调自适应</span>
+                <input id="random-tone-adaptive" data-config="behavior.random_tone_adaptive" type="checkbox" role="switch" class="switch" />
+              </label>
+              <small>需要启用随机语音和动态语调；实际命中后额外调用一次 LLM 选择语气，台词保持原样；20 秒超时或失败回退默认语气</small>
+              <label for="tone-provider">语调自适应 LLM 提供商</label>
+              <select id="tone-provider" data-config="behavior.tone_provider_id">
+                <option value="">跟随当前会话模型</option>
+              </select>
               <div class="form-grid">
                 <div>
                   <label for="private-probability-mode">私聊随机概率</label>
@@ -568,6 +582,7 @@
                 <span>保留朗读片段文字</span>
                 <input data-config="behavior.keep_text" type="checkbox" role="switch" class="switch" />
               </label>
+              <small>先发对应文字，再单独发纯语音，避免平台吞掉混合消息</small>
               <label class="switch-row">
                 <span>LLM 自主语音</span>
                 <input data-config="behavior.tool_enabled" type="checkbox" role="switch" class="switch" />

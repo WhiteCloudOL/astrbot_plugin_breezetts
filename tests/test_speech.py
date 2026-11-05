@@ -345,12 +345,11 @@ async def test_real_decorate_and_send_pipeline(
     after = "".join(
         part.text for part in delivered[voice_index + 1 :] if isinstance(part, Plain)
     )
-    expected_before = "开头第一句。第二句。" if tagged else ""
+    expected_before = ("开头第一句。第二句。" if tagged else "") + (
+        ("中间语音" if tagged else "开头第一句。") if keep_text else ""
+    )
     expected_after = (
-        ("中间语音" if keep_text else "") + "结尾第一句。第二句。"
-        if tagged
-        else ("开头第一句。" if keep_text else "")
-        + "第二句。中间语音结尾第一句。第二句。"
+        "结尾第一句。第二句。" if tagged else "第二句。中间语音结尾第一句。第二句。"
     )
     if mode == "splitter":
         expected_before = expected_before.replace("。", "")
@@ -407,8 +406,258 @@ async def test_tool_voice_and_caption_are_separate_messages(
     outcome = await plugin.breeze_tts(event, "单独语音")
     assert "sent" in outcome and calls == ["单独语音"]
     assert len(event.sent) == 2
-    assert len(event.sent[0]) == 1 and isinstance(event.sent[0][0], Record)
-    assert len(event.sent[1]) == 1 and isinstance(event.sent[1][0], Plain)
+    assert len(event.sent[0]) == 1 and isinstance(event.sent[0][0], Plain)
+    assert len(event.sent[1]) == 1 and isinstance(event.sent[1][0], Record)
+
+
+@pytest.mark.parametrize("cancel_after_caption", [False, True])
+async def test_command_caption_retains_audio_until_voice_or_cancellation(
+    speech_plugin, event_factory, cancel_after_caption
+):
+    plugin, _, _ = speech_plugin
+    plugin.config["behavior"].update(keep_text=True, history_limit=1)
+    event = event_factory("breezetts 先发文字，再发语音。")
+    command = plugin.speak(event)
+    caption = await command.__anext__()
+    assert isinstance(caption.chain[0], Plain)
+    identifier = next(iter(plugin.service.delivery_audio))
+    path = plugin.service.store.path(identifier)
+    await plugin.release_speech_audio(event)
+    await plugin.service.synthesize("另一条并发合成。")
+    assert identifier in plugin.service.delivery_audio and path.is_file()
+    if not cancel_after_caption:
+        voice = await command.__anext__()
+        assert isinstance(voice.chain[0], Record)
+        await event.send(voice)
+        await plugin.release_speech_audio(event)
+    await command.aclose()
+    assert not plugin.service.delivery_audio
+
+
+@pytest.mark.parametrize("provider_id", ["", "tone-model"])
+async def test_random_adaptive_tone_uses_selected_provider_without_rewriting(
+    speech_plugin, event_factory, provider_id, monkeypatch
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(
+        dynamic_tone=True, random_tone_adaptive=True, tone_provider_id=provider_id
+    )
+    plugin.context.get_current_chat_provider_id = AsyncMock(
+        return_value="session-model"
+    )
+    plugin.context.llm_generate = AsyncMock(
+        return_value=LLMResponse(
+            role="assistant", completion_text='{"instruction":"温柔、轻快地说"}'
+        )
+    )
+    original = plugin.service.client.synthesize
+    spy = AsyncMock(wraps=original)
+    monkeypatch.setattr(plugin.service.client, "synthesize", spy)
+    event = event_factory("今天遇到了开心的事")
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("太好了，真替你开心！剩下的文字。")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await decorate_model_result(plugin, event)
+    await decorate_model_result(plugin, event)
+    assert calls == ["太好了，真替你开心！"]
+    assert spy.await_args.args[0]["local"]["instruction"] == "温柔、轻快地说"
+    assert plugin.context.llm_generate.await_count == 1
+    kwargs = plugin.context.llm_generate.await_args.kwargs
+    assert kwargs["chat_provider_id"] == (provider_id or "session-model")
+    assert "太好了，真替你开心！" in kwargs["prompt"] and kwargs.get("tools") is None
+    assert plugin.context.get_current_chat_provider_id.await_count == int(
+        not provider_id
+    )
+    assert plugin.config["local"]["instruction"] == ""
+    await plugin.release_speech_audio(event)
+
+
+@pytest.mark.parametrize(
+    "dynamic,adaptive,probability",
+    [(False, True, 100), (True, False, 100), (True, True, 0)],
+)
+async def test_random_adaptive_tone_requires_both_switches_and_probability_hit(
+    speech_plugin, event_factory, dynamic, adaptive, probability
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(
+        dynamic_tone=dynamic,
+        random_tone_adaptive=adaptive,
+        trigger_probability=probability,
+    )
+    plugin.context.llm_generate = AsyncMock()
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("普通回复。")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await decorate_model_result(plugin, event)
+    plugin.context.llm_generate.assert_not_awaited()
+    assert calls == (["普通回复。"] if probability else [])
+    await plugin.release_speech_audio(event)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "not JSON",
+        '{"instruction":null}',
+        '{"instruction":"[笑]"}',
+        '{"instruction":"' + "a" * 201 + '"}',
+        TimeoutError("private-model-secret"),
+    ],
+)
+async def test_random_tone_invalid_or_failed_llm_falls_back_safely(
+    speech_plugin, event_factory, response, caplog, monkeypatch
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(
+        dynamic_tone=True, random_tone_adaptive=True, tone_provider_id="missing-or-test"
+    )
+    plugin.config["local"]["instruction"] = "fixed"
+    plugin.context.llm_generate = (
+        AsyncMock(side_effect=response)
+        if isinstance(response, Exception)
+        else AsyncMock(
+            return_value=LLMResponse(role="assistant", completion_text=response)
+        )
+    )
+    spy = AsyncMock(wraps=plugin.service.client.synthesize)
+    monkeypatch.setattr(plugin.service.client, "synthesize", spy)
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("完整台词保持原样。")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await decorate_model_result(plugin, event)
+    assert calls == ["完整台词保持原样。"]
+    assert spy.await_args.args[0]["local"]["instruction"] == "fixed"
+    assert (
+        "using configured tone" in caplog.text
+        and "private-model-secret" not in caplog.text
+    )
+    assert not plugin.speech.tone_tasks
+    await plugin.release_speech_audio(event)
+
+
+async def test_dynamic_tool_controls_hide_in_caption_and_history(
+    speech_plugin, event_factory, monkeypatch
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(dynamic_tone=True, keep_text=True)
+    spy = AsyncMock(wraps=plugin.service.client.synthesize)
+    monkeypatch.setattr(plugin.service.client, "synthesize", spy)
+    event = event_factory()
+    receipt = json.loads(
+        await plugin.breeze_tts(
+            event, "[语气:温柔][轻笑]你好。[语气:坚定]一起走。", "慢一点"
+        )
+    )
+    assert receipt["status"] == "sent" and receipt["caption_sent"]
+    assert calls == ["[轻笑]你好。", "一起走。"]
+    assert spy.await_args_list[0].args[0]["local"]["instruction"] == "慢一点\n温柔"
+    assert spy.await_args_list[1].args[0]["local"]["instruction"] == "慢一点\n坚定"
+    assert event.sent[0][0].text == "你好。一起走。"
+    assert isinstance(event.sent[1][0], Record)
+    raw = "<tts>[语气:温柔][轻笑]你好。</tts>"
+    response = LLMResponse(role="assistant", completion_text=raw)
+    await plugin.clean_speech_response(event, response)
+    messages = [Message(role="assistant", content=raw)]
+    await plugin.clean_speech_history(
+        event, SimpleNamespace(messages=messages), response
+    )
+    assert messages[0].content == response.completion_text == "你好。"
+
+
+@pytest.mark.parametrize("tagged", [False, True])
+async def test_reply_controls_survive_planning_and_hidden_captions(
+    speech_plugin, event_factory, tagged
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(dynamic_tone=True, keep_text=True)
+    event = event_factory()
+    raw = "[语气:温柔][轻笑]你好。"
+    raw = f"<tts>{raw}</tts>" if tagged else raw
+    response = LLMResponse(role="assistant", completion_text=raw)
+    await plugin.clean_speech_response(event, response)
+    await plugin.clean_speech_response(event, response)
+    assert response.completion_text == "你好。"
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain(response.completion_text)],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    assert calls == ["[轻笑]你好。"]
+    assert event.get_result().chain[0].text == "你好。"
+    await plugin.release_speech_audio(event)
+
+
+async def test_tool_failed_voice_does_not_repeat_delivered_caption(
+    speech_plugin, event_factory
+):
+    plugin, _, _ = speech_plugin
+    plugin.config["behavior"]["keep_text"] = True
+    event = event_factory()
+    sender = AsyncMock(side_effect=[None, RuntimeError("private-send-secret")])
+    event.send = sender
+    receipt = json.loads(await plugin.breeze_tts(event, "已发送的文字"))
+    assert receipt["status"] == "voice_failed" and receipt["caption_sent"]
+    assert isinstance(sender.await_args_list[0].args[0].chain[0], Plain)
+    assert "already" in await plugin.breeze_tts(event, "已发送的文字")
+    assert not plugin.service.delivery_audio
+
+
+async def test_random_tone_cancellation_releases_frequency_and_generation(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(
+        dynamic_tone=True, random_tone_adaptive=True, tone_provider_id="tone"
+    )
+    started = asyncio.Event()
+
+    async def generate(**kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    plugin.context.llm_generate = generate
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("可以取消的回复。")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    task = asyncio.create_task(decorate_model_result(plugin, event))
+    await asyncio.wait_for(started.wait(), 3)
+    plugin.speech.close_delivery()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not plugin.speech.tone_tasks and not plugin.service.requests and not calls
+    assert not plugin.speech.frequency.sessions
+    assert event.get_result().get_plain_text() == "可以取消的回复。"
+
+
+async def test_tone_provider_picker_uses_only_public_ids(speech_plugin):
+    plugin, _, _ = speech_plugin
+    plugin.context.get_all_providers = lambda: [
+        SimpleNamespace(
+            meta=lambda: SimpleNamespace(id="chat-model"),
+            provider_config={"api_key": "private-provider-key"},
+        )
+    ]
+    snapshot = await plugin.service.state()
+    assert snapshot["llm_providers"] == [{"id": "chat-model", "name": "chat-model"}]
+    assert "private-provider-key" not in json.dumps(snapshot)
 
 
 async def test_agent_plain_turn_preserves_component_boundaries(
@@ -743,7 +992,7 @@ async def test_explicit_voice_agent_reports_delivery_and_finishes_once(
     )
     assert calls == ["听得到我的声音吗"]
     assert len(event.sent) == 1 + int(keep_text)
-    assert isinstance(event.sent[0][0], Record)
+    assert isinstance(event.sent[-1][0], Record)
     history = dump_messages_with_checkpoints(runner.run_context.messages)
     result = next(
         message["content"] for message in history if message["role"] == "tool"
@@ -1262,7 +1511,7 @@ async def test_quoted_voice_send_failure_preserves_text(
     await decorate_model_result(plugin, event)
     if late_quote:
         event.get_result().chain.insert(0, quote)
-        await plugin.preserve_speech_order(event)
+    await plugin.preserve_speech_order(event)
     result = event.get_result()
     assert result.get_plain_text() == text
     assert any(isinstance(part, Reply) for part in result.chain)
@@ -1342,7 +1591,7 @@ async def test_delivery_guard_reload_preserves_outer_wrapper_and_reuses_owner(
     original.assert_awaited_once()
 
 
-async def test_caption_failure_after_voice_does_not_request_whole_message_retry(
+async def test_voice_failure_after_caption_does_not_request_whole_message_retry(
     speech_plugin, event_factory
 ):
     plugin, _, _ = speech_plugin
@@ -1359,7 +1608,8 @@ async def test_caption_failure_after_voice_does_not_request_whole_message_retry(
     assert await plugin.speech.send_chain(sender, event.get_result()) is True
     assert sender.await_count == 2
     assert len(sender.await_args_list[0].args[0].chain) == 1
-    assert isinstance(sender.await_args_list[0].args[0].chain[0], Record)
+    assert isinstance(sender.await_args_list[0].args[0].chain[0], Plain)
+    assert isinstance(sender.await_args_list[1].args[0].chain[0], Record)
     assert not plugin.service.delivery_audio
 
 

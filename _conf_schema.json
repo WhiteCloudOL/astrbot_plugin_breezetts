@@ -133,7 +133,7 @@
       "speaker_boost": {
         "type": "bool",
         "description": "增强音色相似度",
-        "hint": "官方 use_speaker_boost 参数。",
+        "hint": "官方 use_speaker_boost 参数；有 instructions 且 guidance_scale > 1 时官方会忽略该增强开关。",
         "default": false
       },
       "output_format": {
@@ -182,6 +182,25 @@
         "hint": "程序每轮抽取概率，命中后自动朗读回复中的一小段，与自主语音共享去重状态。",
         "default": false
       },
+      "dynamic_tone": {
+        "type": "bool",
+        "description": "启用动态语调",
+        "hint": "开启后解析正文音频标签、分段语气及工具 instruction；关闭时忽略这些控制，不调用自适应 LLM，仍使用工作台默认语气。",
+        "default": false
+      },
+      "random_tone_adaptive": {
+        "type": "bool",
+        "description": "概率语音启用 LLM 语调自适应",
+        "hint": "仅在动态语调开启且概率语音实际命中后，额外调用一次 LLM 选择语气，不修改台词；20 秒超时或失败回退默认语气。",
+        "default": false
+      },
+      "tone_provider_id": {
+        "type": "string",
+        "description": "语调自适应 LLM 提供商",
+        "hint": "选择 AstrBot 中已配置的聊天模型；留空跟随当前会话。仅用于概率语音语调自适应。",
+        "_special": "select_provider",
+        "default": ""
+      },
       "trigger_probability": {
         "type": "int",
         "description": "随机触发概率（%）",
@@ -215,7 +234,7 @@
       "keep_text": {
         "type": "bool",
         "description": "保留朗读片段文字",
-        "hint": "语音与对应文字一起发送，其余文字保持原位。",
+        "hint": "先发送对应文字，再独立发送纯语音消息；不会把文字和语音放入同一消息。",
         "default": true
       },
       "tool_enabled": {

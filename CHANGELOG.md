@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add opt-in dynamic Breeze directions, native events, and per-call tool instructions; join section audio with punctuation-aware pauses and hide controls from visible dialogue.
+- Add optional LLM tone adaptation for random speech with a selectable chat provider, session fallback, bounded output, timeout, and safe failure fallback.
+- Send retained captions before standalone voice messages across tools, commands, quoted replies, and segmented delivery. Preserve captions after partial failures without replaying delivered content.
+
 ## v1.3.3 — 2026-11-01
 
 - Distinguish the random speech candidate from prepared audio and platform submission in diagnostics.
