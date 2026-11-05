@@ -42,6 +42,10 @@ Dynamic Tone is off by default. When off, recognized inline controls and per-cal
 
 When keeping the spoken text, the plugin sends its caption first and then a standalone voice message. Text and voice are never combined in a single outgoing message. Use punctuation and single native pause tags rather than stacked pauses or invented duration syntax. Multi-section synthesis returns one WAV file; single-section synthesis retains the configured output format.
 
+When enabling adaptive tone with prerequisites off, a dialog offers to enable Random Speech and Dynamic Tone together. Confirm and save the workbench settings to apply all three switches. Cancel or Escape restores adaptive tone to off without changing the other switches. The provider picker remains independently configurable. Adaptation runs only when all three switches are enabled.
+
+![Adaptive tone prerequisite confirmation](../images/adaptive-tone-dialog.png)
+
 The former automatic-reply speech option is now Random Speech, and Allow LLM Speech Tool is now Autonomous LLM Speech. Both remain in Chat & Runtime
 
 Private and group conversations can inherit the default probability or use separate values. The conversation interval defaults to 90 seconds and is shared by random speech and LLM tool calls. Different passages in one turn can follow one another; setting the interval to zero disables the cooldown

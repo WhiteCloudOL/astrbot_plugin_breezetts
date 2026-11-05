@@ -445,6 +445,9 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
 
     base_url = await server(upstream)
     plugin.config["local"].update(base_url=base_url, mode="plain")
+    plugin.context.get_all_providers = lambda: [
+        SimpleNamespace(meta=lambda: SimpleNamespace(id="tone-ui-model"))
+    ]
 
     @app.get("/")
     async def parent():
@@ -617,6 +620,61 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
                 path=str(screenshot_dir / "studio-desktop.png"), full_page=True
             )
             await frame.get_by_role("button", name="连接与设置").click()
+            await expect(frame.locator("#random-tone-adaptive")).to_be_enabled()
+            await expect(frame.locator("#tone-provider")).to_be_enabled()
+            await expect(frame.locator("#random-tone-hint")).to_contain_text("随机语音")
+            await expect(frame.locator("#random-tone-hint")).to_contain_text("动态语调")
+            await frame.locator("#random-tone-adaptive").check()
+            await expect(frame.locator("#enable-tone-dialog")).to_be_visible()
+            await frame.locator("#enable-tone-dialog").screenshot(
+                path=str(screenshot_dir / "adaptive-tone-dialog.png")
+            )
+            await frame.locator("#cancel-enable-tone").click()
+            await expect(frame.locator("#random-tone-adaptive")).not_to_be_checked()
+            await expect(frame.locator("#dynamic-tone")).not_to_be_checked()
+            await expect(
+                frame.locator('[data-config="behavior.auto_tts"]')
+            ).not_to_be_checked()
+            await frame.locator("#random-tone-adaptive").check()
+            await page.keyboard.press("Escape")
+            await expect(frame.locator("#enable-tone-dialog")).not_to_be_visible()
+            await expect(frame.locator("#random-tone-adaptive")).not_to_be_checked()
+            await frame.locator("#random-tone-adaptive").check()
+            await frame.locator("#confirm-enable-tone").click()
+            await expect(frame.locator("#dynamic-tone")).to_be_checked()
+            await expect(
+                frame.locator('[data-config="behavior.auto_tts"]')
+            ).to_be_checked()
+            await frame.locator("#tone-provider").select_option("tone-ui-model")
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            assert plugin.config["behavior"]["random_tone_adaptive"] is True
+            assert plugin.config["behavior"]["tone_provider_id"] == "tone-ui-model"
+            assert plugin.config["behavior"]["dynamic_tone"] is True
+            assert plugin.config["behavior"]["auto_tts"] is True
+            await page.reload()
+            await frame.get_by_role("button", name="连接与设置").click()
+            await expect(frame.locator("#random-tone-adaptive")).to_be_checked()
+            await expect(frame.locator("#tone-provider")).to_have_value("tone-ui-model")
+            await expect(frame.locator("#dynamic-tone")).to_be_checked()
+            await expect(frame.locator("#random-tone-hint")).to_contain_text("已启用")
+            await frame.locator("#dynamic-tone").uncheck()
+            await expect(frame.locator("#random-tone-hint")).not_to_contain_text(
+                "随机语音"
+            )
+            await expect(frame.locator("#random-tone-hint")).to_contain_text("动态语调")
+            await frame.locator("#random-tone-adaptive").uncheck()
+            await frame.locator("#random-tone-adaptive").check()
+            await frame.locator("#cancel-enable-tone").click()
+            await expect(frame.locator("#random-tone-adaptive")).not_to_be_checked()
+            await expect(frame.locator("#dynamic-tone")).not_to_be_checked()
+            await expect(
+                frame.locator('[data-config="behavior.auto_tts"]')
+            ).to_be_checked()
+            await frame.locator('[data-config="behavior.auto_tts"]').uncheck()
+            await expect(frame.locator("#tone-provider")).to_be_enabled()
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
             await expect(frame.locator("#random-seed")).to_be_checked()
             await expect(frame.locator("#fixed-seed-field")).to_be_hidden()
             await frame.locator("#random-seed").uncheck()

@@ -76,8 +76,15 @@ function updateSummary() {
   const cacheMiB = generated.reduce((total, item) => total + item.size, 0) / 1024 / 1024;
   $("cache-usage").textContent = `当前成品与预览：${generated.length} 条 · ${cacheMiB.toFixed(1)} MiB`;
   $("trigger-probability").disabled = !draft.behavior.auto_tts;
-  $("random-tone-adaptive").disabled = !draft.behavior.auto_tts || !draft.behavior.dynamic_tone;
-  $("tone-provider").disabled = !draft.behavior.auto_tts || !draft.behavior.dynamic_tone || !draft.behavior.random_tone_adaptive;
+  const missingToneSettings = [
+    !draft.behavior.auto_tts && "随机语音",
+    !draft.behavior.dynamic_tone && "动态语调",
+  ].filter(Boolean);
+  $("random-tone-hint").textContent = missingToneSettings.length
+    ? `还需开启“${missingToneSettings.join("”和“")}”才会生效；开启自适应时可在弹窗中一并启用。`
+    : draft.behavior.random_tone_adaptive
+      ? "已启用：概率命中后调用所选 LLM 选择语气，台词保持原样；20 秒超时或失败回退默认语气。"
+      : "开启后，概率命中时调用所选 LLM 选择语气，台词保持原样；20 秒超时或失败回退默认语气。";
   $("fixed-seed-field").hidden = draft.local.random_seed;
   $("seed").disabled = draft.local.random_seed;
   for (const scope of ["private", "group"]) {
@@ -555,11 +562,30 @@ document.querySelectorAll("[data-config]").forEach((element) =>
         : element.type === "number"
           ? Number(element.value)
           : element.value;
+    if (element.id === "random-tone-adaptive" && value &&
+        (!draft.behavior.auto_tts || !draft.behavior.dynamic_tone)) {
+      $("enable-tone-dialog").showModal();
+      return;
+    }
     if (parts.length === 1) draft[parts[0]] = value;
     else draft[parts[0]][parts[1]] = value;
     markDirty();
   }),
 );
+$("cancel-enable-tone").addEventListener("click", () => $("enable-tone-dialog").close());
+$("confirm-enable-tone").addEventListener("click", () => {
+  draft.behavior.auto_tts = true;
+  draft.behavior.dynamic_tone = true;
+  draft.behavior.random_tone_adaptive = true;
+  document.querySelector('[data-config="behavior.auto_tts"]').checked = true;
+  $("dynamic-tone").checked = true;
+  $("enable-tone-dialog").close();
+  markDirty();
+});
+$("enable-tone-dialog").addEventListener("close", () => {
+  $("random-tone-adaptive").checked = draft.behavior.random_tone_adaptive;
+});
+
 document.querySelectorAll("[data-probability-scope]").forEach((element) =>
   element.addEventListener("change", () => {
     if (!draft) return;
