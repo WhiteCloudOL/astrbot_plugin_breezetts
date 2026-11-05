@@ -543,11 +543,11 @@
               <small>开启后支持 [语气:温柔]、[轻笑]、[耳语]、[唱歌]、[停顿] 和工具 instruction。关闭时忽略动态控制，使用默认语气，聊天文字隐藏控制标记</small>
               <label class="switch-row">
                 <span>概率语音 LLM 语调自适应</span>
-                <input id="random-tone-adaptive" data-config="behavior.random_tone_adaptive" type="checkbox" role="switch" class="switch" />
+                <input id="random-tone-adaptive" data-config="behavior.random_tone_adaptive" type="checkbox" role="switch" class="switch" aria-describedby="random-tone-hint" />
               </label>
-              <small>需要启用随机语音和动态语调；实际命中后额外调用一次 LLM 选择语气，台词保持原样；20 秒超时或失败回退默认语气</small>
+              <small id="random-tone-hint" role="status">需要启用随机语音和动态语调；开启自适应时可在弹窗中一并启用</small>
               <label for="tone-provider">语调自适应 LLM 提供商</label>
-              <select id="tone-provider" data-config="behavior.tone_provider_id">
+              <select id="tone-provider" data-config="behavior.tone_provider_id" aria-describedby="random-tone-hint">
                 <option value="">跟随当前会话模型</option>
               </select>
               <div class="form-grid">
@@ -615,6 +615,14 @@
         <footer>BreezeTTS · 为文字赋予声音</footer>
       </main>
     </div>
+    <dialog id="enable-tone-dialog" aria-labelledby="enable-tone-title" aria-describedby="enable-tone-message">
+      <h2 id="enable-tone-title" class="text-h3 pa-4 pb-0 pl-6">同时开启语音设置？</h2>
+      <p id="enable-tone-message" class="dialog-body">概率语音 LLM 语调自适应需要开启“随机语音”和“动态语调”。是否一并开启？点击工作台的“保存”后生效；取消则保持自适应关闭。</p>
+      <div class="dialog-actions">
+        <button id="cancel-enable-tone" type="button" variant="text" class="text-button" autofocus>取消</button>
+        <button id="confirm-enable-tone" type="button" variant="tonal" class="primary">一并开启</button>
+      </div>
+    </dialog>
     <dialog id="reference-dialog">
       <form id="reference-form">
         <h2 class="text-h3 pa-4 pb-0 pl-6">编辑参考录音</h2>

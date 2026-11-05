@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Keep the adaptive random tone switch accessible and offer a confirmation dialog to enable its missing prerequisites together. Cancel or Escape restores the switch to off without changing other settings; provider selection remains independently configurable.
+
 ## v1.4.0 — 2026-11-05
 
 - Add opt-in dynamic Breeze directions, native events, and per-call tool instructions; join section audio with punctuation-aware pauses and hide controls from visible dialogue.
