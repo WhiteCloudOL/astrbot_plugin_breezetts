@@ -23,6 +23,8 @@ from breezetts_test.speech_markup import (
         ("<tts>含`代码`</tts>", "含`代码`", []),
         ("&lt;tts&gt;你好&lt;/tts&gt;", "你好", ["你好"]),
         ("<tts>甲</tts>和<breeze_tts>乙</breeze_tts>", "甲和乙", ["甲", "乙"]),
+        ("`[笑]` [语气:温柔]你好。", "`[笑]` 你好。", []),
+        ("```text\n[style:literal][笑]\n```", "```text\n[style:literal][笑]\n```", []),
     ],
 )
 def test_markup_balancing_and_code(raw, clean, spoken):

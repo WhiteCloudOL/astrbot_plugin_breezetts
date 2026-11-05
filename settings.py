@@ -35,6 +35,9 @@ DEFAULTS = {
     },
     "behavior": {
         "auto_tts": False,
+        "dynamic_tone": False,
+        "random_tone_adaptive": False,
+        "tone_provider_id": "",
         "trigger_probability": 20,
         "private_trigger_probability": -1,
         "group_trigger_probability": -1,
@@ -193,6 +196,13 @@ def validate_config(value: dict) -> dict:
             ):
                 raise BreezeError(f"{group}.{name} 内容过长。")
     local, cloud = result["local"], result["cloud"]
+    provider_id = result["behavior"]["tone_provider_id"]
+    if (
+        len(provider_id) > 200
+        or provider_id != provider_id.strip()
+        or any(ord(char) < 32 for char in provider_id)
+    ):
+        raise BreezeError("语调 LLM 提供商 ID 无效。")
     if local["mode"] not in {"reference", "design", "plain"}:
         raise BreezeError("本地模式须为参考音色、声音设计或普通朗读。")
     if cloud["output_format"] not in FORMATS or cloud["delivery"] not in {

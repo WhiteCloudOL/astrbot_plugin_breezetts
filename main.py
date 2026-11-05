@@ -12,7 +12,9 @@ from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.message import TextPart
 from astrbot.core.agent.tool import ToolSet
+from astrbot.core.platform.message_type import MessageType
 
+from .breeze_control import clean_breeze_text, control_prompt
 from .service import BreezeService
 from .settings import BreezeError
 from .speech import TURN_KEY, SpeechDelivery
@@ -30,7 +32,7 @@ class BreezeTTS(Star):
         self.logger = getattr(self, "logger", logger)
         self.config = config
         self.service = BreezeService(
-            config, StarTools.get_data_dir(PLUGIN_NAME), self.logger
+            config, StarTools.get_data_dir(PLUGIN_NAME), self.logger, context
         )
         self.web = WorkbenchAPI(self.service)
         self.speech = SpeechDelivery(self.service, self.logger, context)
@@ -80,16 +82,23 @@ class BreezeTTS(Star):
                 "用法：/breezetts 想说的话\n请先在插件的 BreezeTTS 工作台配置服务和音色。"
             )
             return
+        audio_id = None
         try:
             item = await self.service.synthesize(parts[1], for_delivery=True)
+            audio_id = item["id"]
             state = self.speech.turn(event)
-            state.audio_ids.add(item["id"])
             state.source = "command"
             assert self.service.store is not None
+            caption = clean_breeze_text(parts[1]).strip()
+            if self.service.settings()["behavior"]["keep_text"] and caption:
+                yield event.plain_result(caption)
+            # Caption delivery must not release the pending voice reservation.
+            state.audio_ids.add(item["id"])
             yield event.chain_result(
                 [
                     Record.fromFileSystem(
-                        self.service.store.path(item["id"]), text=parts[1]
+                        self.service.store.path(item["id"]),
+                        text=clean_breeze_text(parts[1]),
                     )
                 ]
             )
@@ -101,9 +110,14 @@ class BreezeTTS(Star):
                 "Breeze command failed unexpectedly (%s).", type(exc).__name__
             )
             yield event.plain_result("语音发送失败，请检查平台连接及音频格式。")
+        finally:
+            if audio_id is not None:
+                await self.service.release_audio({audio_id})
 
     @filter.llm_tool(name="breeze_tts")
-    async def breeze_tts(self, event: AstrMessageEvent, text: str):
+    async def breeze_tts(
+        self, event: AstrMessageEvent, text: str, instruction: str = ""
+    ):
         """Synthesize and send a real voice message using BreezeTTS workbench settings.
 
         Choose only the passage to speak. Other content can remain ordinary text.
@@ -112,11 +126,18 @@ class BreezeTTS(Star):
         conversational content and describe speech availability from the tool result.
         After success, continue only with new content that has not been delivered.
         Keep delivery acknowledgments and bracketed status messages out of dialogue.
+        When dynamic tone is enabled, instruction sets overall delivery and inline
+        [语气:温柔] / [style:gentle] markers change subsequent sections. Native events
+        such as [轻笑], [耳语], [唱歌], [停顿] or (laugh) stay in text. Use directions
+        in the dialogue language, punctuation for timing, and no invented pause durations.
+        Dynamic controls are ignored when disabled. Captions are sent before voice,
+        in separate messages. A failed call is not a reason to repeat it in this turn.
 
         Args:
             text(string): The exact text to speak, up to the configured character limit.
+            instruction(string): Optional delivery direction, at most 200 characters; requires dynamic tone.
         """
-        return await self.speech.tool(event, text)
+        return await self.speech.tool(event, text, instruction)
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=12000)
     async def prepare_speech(self, event: AstrMessageEvent) -> None:
@@ -185,16 +206,33 @@ class BreezeTTS(Star):
             )
         )
         # Final tool filters have run; temporary guidance matches executable tools.
-        if voice_requested and not state.source:
+        dynamic_tool = bool(
+            state.autonomous
+            and req.func_tool
+            and req.func_tool.get_tool("breeze_tts")
+            and self.service.settings()["behavior"]["dynamic_tone"]
+        )
+        if (voice_requested or dynamic_tool) and not state.source:
             instruction = (
                 marker + "BreezeTTS 可通过工作台中的服务与音色配置合成并发送真实语音。"
                 "当前语音能力和发送结果以 breeze_tts 工具返回为准，旧对话中关于未配置语音的说法不代表当前状态。"
                 "请朗读自然的对话内容，成功发送后仅补充尚未发送的新内容。"
                 "发送结果是内部回执；保持角色对话，不回复发送状态或“（语音已发送）”之类的括号提示。"
             )
-            instruction += (
-                "用户本轮明确请求语音，请调用 breeze_tts 工具发送选中的简短内容。"
-            )
+            if voice_requested:
+                instruction += (
+                    "用户本轮明确请求语音，请调用 breeze_tts 工具发送选中的简短内容。"
+                )
+            else:
+                instruction += (
+                    "仅在适合语音时调用 breeze_tts；普通文字回复不添加控制标记。"
+                )
+            config = self.service.settings()
+            if config["behavior"]["dynamic_tone"]:
+                instruction += control_prompt(
+                    local=config["backend"] == "local",
+                    language=config["cloud"]["language_code"],
+                )
             req.extra_user_content_parts.append(
                 TextPart(text=instruction + "</breezetts_turn>").mark_as_temp()
             )
@@ -224,6 +262,13 @@ class BreezeTTS(Star):
             raw = cleaned
             if raw != "".join(text for text, _ in state.plan):
                 state.plan = parse_speech(raw)
+                state.speech_inputs = {
+                    clean_breeze_text(text): text
+                    for text, voice in reversed(
+                        parse_speech(raw, preserve_controls=True)
+                    )
+                    if clean_breeze_text(text) != text
+                }
             if resp.result_chain and any(
                 not isinstance(part, Plain) for part in resp.result_chain.chain
             ):
@@ -312,13 +357,13 @@ class BreezeTTS(Star):
                 ):
                     continue
                 if keep_voice:
-                    try:
-                        await event.send(result.derive([component]))
-                    except Exception as exc:
-                        self.logger.warning(
-                            "Breeze quoted voice delivery failed (%s); retaining text.",
-                            type(exc).__name__,
-                        )
+                    index = result.chain.index(component)
+                    if component.text and not any(
+                        isinstance(part, Plain) and component.text in part.text
+                        for part in result.chain[:index]
+                    ):
+                        result.chain.insert(index, Plain(component.text))
+                    continue
                 else:
                     self.logger.info(
                         "Breeze speech skipped (reason=late_quote_text_only, source=%s, audio_id=%s).",
@@ -326,14 +371,14 @@ class BreezeTTS(Star):
                         Path(component.path).stem,
                     )
                 index = result.chain.index(component)
-                if component.text and not (
-                    index + 1 < len(result.chain)
-                    and isinstance(result.chain[index + 1], Plain)
-                    and result.chain[index + 1].text == component.text
+                if component.text and not any(
+                    isinstance(part, Plain) and component.text in part.text
+                    for part in result.chain
                 ):
                     result.chain[index] = Plain(component.text)
                 else:
                     result.chain.pop(index)
+                await self.service.release_audio({Path(component.path).stem})
         if not any(
             isinstance(part, Plain)
             and part.text.strip()
@@ -349,6 +394,22 @@ class BreezeTTS(Star):
         settings = self.context.get_config(event.unified_msg_origin).get(
             "platform_settings", {}
         )
+        # The host adds these only to text/image-only chains, after this hook.
+        if state.source in {"random", "tags"} and any(
+            isinstance(part, Plain) and part.text.strip() for part in result.chain
+        ):
+            if (
+                settings.get("reply_with_mention")
+                and event.get_message_type() != MessageType.FRIEND_MESSAGE
+                and not any(isinstance(part, At) for part in result.chain)
+            ):
+                result.chain.insert(
+                    0, At(qq=event.get_sender_id(), name=event.get_sender_name())
+                )
+            if settings.get("reply_with_quote") and not any(
+                isinstance(part, Reply) for part in result.chain
+            ):
+                result.chain.insert(0, Reply(id=event.message_obj.message_id))
         segmented = settings.get("segmented_reply", {})
         forward_audio = event.get_platform_name() == "aiocqhttp" and sum(
             len(part.text) for part in result.chain if isinstance(part, Plain)
@@ -378,13 +439,31 @@ class BreezeTTS(Star):
                     for part in prefix
                 ):
                     try:
-                        await event.send(result.derive(prefix))
+                        if await event.send(result.derive(prefix)) is False:
+                            raise RuntimeError(
+                                "Breeze leading text was rejected by the sender"
+                            )
                         del result.chain[:index]
                     except Exception as exc:
                         self.logger.error(
                             "Breeze leading text delivery failed (%s).",
                             type(exc).__name__,
                         )
+                        # Leave the text for the host, but never send voice ahead of it.
+                        for voice in result.chain[:]:
+                            if (
+                                isinstance(voice, Record)
+                                and voice.path
+                                and Path(voice.path).stem in state.audio_ids
+                            ):
+                                result.chain.remove(voice)
+                                if voice.text and not any(
+                                    isinstance(part, Plain) and voice.text in part.text
+                                    for part in result.chain
+                                ):
+                                    result.chain.insert(0, Plain(voice.text))
+                        await self.service.release_audio(state.audio_ids)
+                        return
                 if forward_audio:
                     # The host will wrap the remaining long text in a forward node.
                     # Voice must leave before that node is built.
