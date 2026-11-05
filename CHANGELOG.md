@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.4.1 — 2026-11-06
 
 - Keep the adaptive random tone switch accessible and offer a confirmation dialog to enable its missing prerequisites together. Cancel or Escape restores the switch to off without changing other settings; provider selection remains independently configurable.
 
