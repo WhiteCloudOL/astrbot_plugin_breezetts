@@ -51,7 +51,8 @@
             ><button id="save" class="primary" disabled>保存配置</button>
           </div>
         </header>
-        <div id="notice" role="status" aria-live="polite" hidden></div>
+
+    <div id="notice" role="status" aria-live="polite" hidden></div>
         <section id="page-studio" class="page">
           <div class="studio-layout">
             <div class="panel composer">
@@ -293,12 +294,30 @@
           <div class="settings-layout">
             <div class="panel settings-panel">
               <h2>连接服务</h2>
-              <p class="muted">两套配置分别保存，切换后即可使用</p>
+              <p class="muted">Breeze 连接独立保存；其他平台复用 AstrBot 已配置的提供商</p>
               <label for="backend">当前服务</label
               ><select id="backend" data-config="backend">
                 <option value="local">本地 API</option>
                 <option value="cloud">BreezeBlue 官方 API</option>
+                <option value="provider">AstrBot TTS 提供商</option>
               </select>
+              <div id="provider-settings" hidden>
+                <label for="tts-provider">TTS 提供商</label>
+                <select id="tts-provider" data-config="provider.provider_id"><option value="">请选择已配置的 TTS 提供商</option></select>
+                <small>使用 AstrBot 中已启用的模型、音色和凭据。列表仅显示支持动态语调协议的模型；变更模型后请刷新工作台。</small>
+              </div>
+              <div id="provider-protocol" hidden>
+                <label for="tts-preset">Dashscope 音色指令协议</label>
+                <select id="tts-preset" data-config="provider.preset">
+                  <option value="">自动识别</option><option value="qwen">Qwen 自由指令</option>
+                  <option value="cosyvoice">CosyVoice 复刻/设计音色自由指令</option><option value="cosyvoice_fixed">CosyVoice 预置音色固定情感</option>
+                </select>
+                <small>仅当官方文档明确当前模型与音色支持时手动选择；不会改变上游模型能力。不支持指令的音色请在 AstrBot 中切换。</small>
+              </div>
+              <div id="expression-controls">
+                <p id="expression-policy" class="muted"></p>
+                <button type="button" id="edit-expression" class="secondary">编辑平台控制表</button>
+              </div>
               <div id="local-settings">
                 <div class="field-heading">
                   <h3>本地 API</h3>
@@ -540,7 +559,7 @@
                 <span>启用动态语调</span>
                 <input id="dynamic-tone" data-config="behavior.dynamic_tone" type="checkbox" role="switch" class="switch" />
               </label>
-              <small>开启后支持 [语气:温柔]、[轻笑]、[耳语]、[唱歌]、[停顿] 和工具 instruction。关闭时忽略动态控制，使用默认语气，聊天文字隐藏控制标记</small>
+              <small>开启后允许分段语气、当前平台原生标签和工具 instruction；推荐按语境使用，也可不加。固定平台使用精确情绪值，自由平台可描述细致表演。关闭时忽略动态控制，聊天文字隐藏已识别标记</small>
               <label class="switch-row">
                 <span>概率语音 LLM 语调自适应</span>
                 <input id="random-tone-adaptive" data-config="behavior.random_tone_adaptive" type="checkbox" role="switch" class="switch" aria-describedby="random-tone-hint" />
@@ -550,6 +569,14 @@
               <select id="tone-provider" data-config="behavior.tone_provider_id" aria-describedby="random-tone-hint">
                 <option value="">跟随当前会话模型</option>
               </select>
+              <div id="speech-prompts">
+                <h3>语音提示词</h3>
+                <p class="muted">推荐 LLM 按语境添加语气或标签，也可以不加。点击编辑完整模板，使用变量插入当前平台的规则与标签表。</p>
+                <div class="button-row">
+                  <button type="button" class="secondary" data-edit-prompt="speech_prompt">编辑聊天语音提示词</button>
+                  <button type="button" class="secondary" data-edit-prompt="tone_prompt">编辑概率语音自适应提示词</button>
+                </div>
+              </div>
               <div class="form-grid">
                 <div>
                   <label for="private-probability-mode">私聊随机概率</label>
@@ -595,7 +622,7 @@
               <small>默认让带引用的回复保持文字；开启后保留引用正文并独立发送语音，被引用的原消息不参与合成</small>
               <label for="max-characters">单次文字上限</label>
               <input id="max-characters" data-config="behavior.max_characters" type="number" min="1" max="2000" />
-              <small>官方默认账号上限 1000 字；提升上限前请确认账号权限。超限片段保持文字</small>
+              <small>默认上限 1000 字；请按所选模型的实际限制调整。超限片段保持文字</small>
               <label for="timeout">合成总超时（秒）</label>
               <input id="timeout" data-config="behavior.timeout" type="number" min="10" max="1800" />
               <label for="history-limit">保留成品与预览数量</label>
@@ -615,6 +642,52 @@
         <footer>BreezeTTS · 为文字赋予声音</footer>
       </main>
     </div>
+    <dialog id="expression-dialog" class="prompt-dialog expression-dialog" aria-labelledby="expression-title" aria-describedby="expression-description">
+      <h2 id="expression-title" class="text-h3 pa-4 pb-0 pl-6">编辑平台控制表</h2>
+      <div class="dialog-body">
+        <p id="expression-description" class="muted"></p>
+        <label for="custom-tags" id="custom-tags-label">原生正文标签</label>
+        <textarea id="custom-tags" rows="8" maxlength="12000" aria-describedby="custom-tags-hint expression-error"></textarea>
+        <small id="custom-tags-hint"></small>
+        <div id="custom-styles-field">
+          <label for="custom-styles">固定情绪白名单</label>
+          <textarea id="custom-styles" rows="5" maxlength="12000" aria-describedby="custom-styles-hint expression-error"></textarea>
+          <small id="custom-styles-hint">每行一个真实 API 值，例如 happy。固定平台只允许从生效白名单中选择，不能自行翻译或组合。</small>
+        </div>
+        <p id="expression-error" class="error" role="alert" hidden></p>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="reset-expression" class="text-button" variant="text">恢复当前平台预设</button>
+        <button type="button" id="cancel-expression" class="secondary" variant="text">取消</button>
+        <button type="button" id="apply-expression" class="primary" variant="tonal">应用到草稿</button>
+      </div>
+      <p class="prompt-dialog-footnote muted">每行一项，最多 100 行。留空使用预设；应用后点击“保存配置”生效，取消或 Esc 放弃本次编辑。</p>
+    </dialog>
+    <dialog id="speech-prompt-dialog" class="prompt-dialog" aria-labelledby="speech-prompt-title" aria-describedby="speech-prompt-description">
+      <h2 id="speech-prompt-title" class="text-h3 pa-4 pb-0 pl-6">编辑语音提示词</h2>
+      <div class="dialog-body">
+        <p id="speech-prompt-description" class="muted">这里是完整提示词模板，平台规则、标签表和输出格式通过 {变量名} 替换，不会在模板后隐藏追加。标签与语气指令均为推荐使用，可全部省略。</p>
+        <div class="prompt-editor-layout">
+          <div>
+            <label for="prompt-editor">完整提示词模板</label>
+            <textarea id="prompt-editor" rows="18" maxlength="6000" aria-describedby="prompt-editor-hint prompt-editor-error"></textarea>
+            <small id="prompt-editor-hint">变量在使用时自动替换。点击变量按钮可在光标处插入，也可选中文字后替换；普通 JSON 花括号无需转义。留空使用默认模板。</small>
+            <p id="prompt-editor-error" class="error" role="alert" hidden></p>
+          </div>
+          <aside aria-label="提示词变量">
+            <h3>插入变量</h3>
+            <p class="muted">点击变量名插入；下方说明它在运行时代表什么。无需手动复制平台标签。</p>
+            <div id="prompt-variable-list"></div>
+          </aside>
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" id="restore-prompt" class="text-button" variant="text">恢复默认模板</button>
+        <button type="button" id="cancel-prompt" class="secondary" variant="text">取消</button>
+        <button type="button" id="apply-prompt" class="primary" variant="tonal">应用到草稿</button>
+      </div>
+      <p class="prompt-dialog-footnote muted">应用后还需点击工作台“保存配置”才会生效；取消或按 Esc 放弃本次弹窗编辑。</p>
+    </dialog>
     <dialog id="enable-tone-dialog" aria-labelledby="enable-tone-title" aria-describedby="enable-tone-message">
       <h2 id="enable-tone-title" class="text-h3 pa-4 pb-0 pl-6">同时开启语音设置？</h2>
       <p id="enable-tone-message" class="dialog-body">概率语音 LLM 语调自适应需要开启“随机语音”和“动态语调”。是否一并开启？点击工作台的“保存”后生效；取消则保持自适应关闭。</p>

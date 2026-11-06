@@ -448,6 +448,15 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
     plugin.context.get_all_providers = lambda: [
         SimpleNamespace(meta=lambda: SimpleNamespace(id="tone-ui-model"))
     ]
+    ui_tts = SimpleNamespace(
+        provider_config={"type": "minimax_tts_api", "id": "expressive-voice"},
+        model_name="speech-2.8-hd",
+        meta=lambda: SimpleNamespace(id="expressive-voice"),
+    )
+    plugin.context.get_all_tts_providers = lambda: [ui_tts]
+    plugin.context.get_provider_by_id = lambda provider_id: (
+        ui_tts if provider_id == "expressive-voice" else None
+    )
 
     @app.get("/")
     async def parent():
@@ -673,6 +682,166 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             ).to_be_checked()
             await frame.locator('[data-config="behavior.auto_tts"]').uncheck()
             await expect(frame.locator("#tone-provider")).to_be_enabled()
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            await frame.locator('[data-edit-prompt="speech_prompt"]').click()
+            await expect(frame.locator("#speech-prompt-dialog")).to_be_visible()
+            await expect(frame.locator("#speech-prompt-description")).to_contain_text(
+                "可全部省略"
+            )
+            await expect(frame.locator("#prompt-variable-list")).to_contain_text(
+                "原生标签表"
+            )
+            await expect(
+                frame.locator('[data-insert-variable="output_protocol"]')
+            ).to_have_count(0)
+            await frame.locator("#prompt-editor").fill("开头|结尾")
+            await frame.locator("#prompt-editor").evaluate(
+                "editor => editor.setSelectionRange(2, 3)"
+            )
+            await frame.locator('[data-insert-variable="audio_tags"]').click()
+            await expect(frame.locator("#prompt-editor")).to_have_value(
+                "开头{audio_tags}结尾"
+            )
+            await frame.locator("#restore-prompt").click()
+            await expect(frame.locator("#prompt-editor")).to_have_value(
+                plugin.service.settings()["behavior"]["speech_prompt"]
+            )
+            await page.screenshot(
+                path=str(screenshot_dir / "prompt-editor-desktop.png")
+            )
+            await page.set_viewport_size({"width": 390, "height": 844})
+            await expect(
+                frame.locator('[data-insert-variable="audio_tags"]')
+            ).to_be_visible()
+            assert await frame.locator("#speech-prompt-dialog").evaluate(
+                "dialog => dialog.scrollWidth <= dialog.clientWidth"
+            )
+            await page.screenshot(path=str(screenshot_dir / "prompt-editor-mobile.png"))
+            await page.set_viewport_size({"width": 1440, "height": 1040})
+            await frame.locator("#prompt-editor").fill("{output_protocol}")
+            await frame.locator("#apply-prompt").click()
+            await expect(frame.locator("#prompt-editor-error")).to_contain_text(
+                "不支持的变量"
+            )
+            await expect(frame.locator("#speech-prompt-dialog")).to_be_visible()
+            await frame.locator("#prompt-editor").fill("取消这次编辑")
+            await frame.locator("#cancel-prompt").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            await frame.locator('[data-edit-prompt="speech_prompt"]').click()
+            await expect(frame.locator("#prompt-editor")).not_to_have_value(
+                "取消这次编辑"
+            )
+            await frame.locator("#prompt-editor").fill("Escape 不应应用")
+            await page.keyboard.press("Escape")
+            await expect(frame.locator("#speech-prompt-dialog")).not_to_be_visible()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            speech_template = "推荐按语境表达惊喜，不必添加标签。\n{platform_rules}\n{audio_tags}\n{control_syntax}"
+            tone_template = "保留所有台词，允许自然朗读。\n{platform_rules}\n{audio_tags}\n{output_protocol}"
+            for name, template in (
+                ("speech_prompt", speech_template),
+                ("tone_prompt", tone_template),
+            ):
+                await frame.locator(f'[data-edit-prompt="{name}"]').click()
+                await frame.locator("#prompt-editor").fill(template)
+                if name == "tone_prompt":
+                    await expect(
+                        frame.locator('[data-insert-variable="output_protocol"]')
+                    ).to_be_visible()
+                    await expect(
+                        frame.locator('[data-insert-variable="passage"]')
+                    ).to_be_visible()
+                await frame.locator("#apply-prompt").click()
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            await page.reload()
+            await frame.get_by_role("button", name="连接与设置").click()
+            for name, template in (
+                ("speech_prompt", speech_template),
+                ("tone_prompt", tone_template),
+            ):
+                await frame.locator(f'[data-edit-prompt="{name}"]').click()
+                await expect(frame.locator("#prompt-editor")).to_have_value(template)
+                await frame.locator("#restore-prompt").click()
+                await frame.locator("#apply-prompt").click()
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            await frame.locator("#edit-expression").click()
+            await expect(frame.locator("#expression-dialog")).to_be_visible()
+            await expect(frame.locator("#expression-description")).to_contain_text(
+                "并非穷举白名单"
+            )
+            await expect(frame.locator("#custom-styles-field")).to_be_hidden()
+            await page.screenshot(
+                path=str(screenshot_dir / "expression-dialog-desktop.png")
+            )
+            await page.set_viewport_size({"width": 390, "height": 844})
+            assert await frame.locator("#expression-dialog").evaluate(
+                "dialog => dialog.scrollWidth <= dialog.clientWidth"
+            )
+            await page.screenshot(
+                path=str(screenshot_dir / "expression-dialog-mobile.png")
+            )
+            await page.set_viewport_size({"width": 1440, "height": 1040})
+            await frame.locator("#custom-tags").fill("[语气:新描述]")
+            await frame.locator("#apply-expression").click()
+            await expect(frame.locator("#expression-error")).to_contain_text(
+                "无需填入标签表"
+            )
+            await expect(frame.locator("#expression-dialog")).to_be_visible()
+            await frame.locator("#custom-tags").fill("[取消的标签]")
+            await frame.locator("#cancel-expression").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            await frame.locator("#edit-expression").click()
+            await expect(frame.locator("#custom-tags")).to_have_value("")
+            await frame.locator("#custom-tags").fill("[Esc 丢弃]")
+            await page.keyboard.press("Escape")
+            await expect(frame.locator("#expression-dialog")).not_to_be_visible()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            await frame.locator("#edit-expression").click()
+            await frame.locator("#custom-tags").fill("[咳嗽]")
+            await frame.locator("#apply-expression").click()
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            await page.reload()
+            await frame.get_by_role("button", name="连接与设置").click()
+            await frame.locator("#edit-expression").click()
+            await expect(frame.locator("#custom-tags")).to_have_value("[咳嗽]")
+            await frame.locator("#reset-expression").click()
+            assert plugin.config["expression"]["breeze_local_tags"] == "[咳嗽]"
+            await frame.locator("#apply-expression").click()
+            await frame.locator("#backend").select_option("provider")
+            await frame.locator("#tts-provider").select_option("expressive-voice")
+            await expect(frame.locator("#local-settings")).to_be_hidden()
+            await expect(frame.locator("#expression-policy")).to_contain_text(
+                "严格固定值"
+            )
+            await frame.locator("#edit-expression").click()
+            await expect(frame.locator("#custom-styles-field")).to_be_visible()
+            await frame.locator("#custom-tags").fill("(laughs)\n(custom event)")
+            await frame.locator("#custom-styles").fill("happy\nsad")
+            await page.screenshot(
+                path=str(screenshot_dir / "expression-dialog-fixed.png")
+            )
+            await frame.locator("#apply-expression").click()
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            assert plugin.config["expression"]["minimax_styles"] == "happy\nsad"
+            await page.reload()
+            await frame.get_by_role("button", name="连接与设置").click()
+            await frame.locator("#edit-expression").click()
+            await expect(frame.locator("#custom-tags")).to_have_value(
+                "(laughs)\n(custom event)"
+            )
+            await expect(frame.locator("#custom-styles")).to_have_value("happy\nsad")
+            await frame.locator("#reset-expression").click()
+            await expect(frame.locator("#custom-styles")).to_have_value("")
+            await frame.locator("#apply-expression").click()
+            await frame.locator("#test-connection").click()
+            await expect(frame.locator("#connection-result")).to_contain_text(
+                "尚未合成"
+            )
+            await frame.locator("#backend").select_option("local")
             await frame.locator("#save").click()
             await expect(frame.locator("#save-state")).to_have_text("配置已保存")
             await expect(frame.locator("#random-seed")).to_be_checked()

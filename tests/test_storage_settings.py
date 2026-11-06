@@ -19,6 +19,42 @@ def test_existing_local_settings_enable_random_seed_by_default():
     assert validated["local"]["seed"] == 77
 
 
+@pytest.mark.parametrize("name", ["speech_prompt", "tone_prompt"])
+def test_editable_prompt_defaults_and_schema_agree(config, name):
+    from pathlib import Path
+
+    config["behavior"].pop(name)
+    assert validate_config(config)["behavior"][name] == DEFAULTS["behavior"][name]
+    schema = json.loads(
+        (Path(__file__).resolve().parents[1] / "_conf_schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert schema["behavior"]["items"][name]["default"] == DEFAULTS["behavior"][name]
+
+
+@pytest.mark.parametrize("name", ["speech_prompt", "tone_prompt"])
+@pytest.mark.parametrize("value", [[], None, "x" * 6001, "invalid\x00prompt"])
+def test_editable_prompts_reject_invalid_values(config, name, value):
+    config["behavior"][name] = value
+    with pytest.raises(BreezeError):
+        validate_config(config)
+
+
+async def test_prompt_defaults_and_custom_edits_round_trip(service, config):
+    snapshot = await service.state()
+    assert snapshot["prompt_defaults"] == {
+        name: DEFAULTS["behavior"][name] for name in ("speech_prompt", "tone_prompt")
+    }
+    snapshot["config"]["behavior"].update(
+        speech_prompt="像老朋友一样轻松自然。", tone_prompt="保留俏皮的节奏，按需轻笑。"
+    )
+    saved = await service.save_settings(snapshot["config"], [])
+    assert saved["config"]["behavior"]["speech_prompt"] == "像老朋友一样轻松自然。"
+    assert saved["config"]["behavior"]["tone_prompt"] == "保留俏皮的节奏，按需轻笑。"
+    assert saved["prompt_defaults"] == snapshot["prompt_defaults"]
+
+
 def test_quote_policy_defaults_and_validation():
     config = copy.deepcopy(DEFAULTS)
     config["behavior"].pop("quote_keep_text")
@@ -174,3 +210,30 @@ def test_pcm_is_a_real_wave_container():
         assert audio.getnframes() == 100
         assert audio.getframerate() == 16000
     assert extension == "wav"
+
+
+@pytest.mark.parametrize(
+    ("name", "template"),
+    [
+        ("speech_prompt", "{not_a_variable}"),
+        ("speech_prompt", "{passage}"),
+        ("speech_prompt", "{output_protocol}"),
+        ("tone_prompt", "{missing}"),
+    ],
+)
+def test_prompt_templates_reject_unknown_or_out_of_scope_variables(
+    config, name, template
+):
+    config["behavior"][name] = template
+    with pytest.raises(BreezeError, match="变量"):
+        validate_config(config)
+
+
+def test_prompt_variables_keep_literal_json_and_round_trip(config):
+    config["behavior"]["tone_prompt"] = (
+        '{platform_rules}\n{audio_tags}\n{output_protocol}\n{"instruction":""}'
+    )
+    assert (
+        validate_config(config)["behavior"]["tone_prompt"]
+        == config["behavior"]["tone_prompt"]
+    )

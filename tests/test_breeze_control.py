@@ -144,3 +144,31 @@ def test_audio_merge_pauses_and_mismatch(wav_audio):
     with wave.open(io.BytesIO(merged), "rb") as audio:
         # This fixture is already quiet: existing silence is counted, not doubled.
         assert audio.getnframes() == 24000 * 8
+
+
+def test_complete_prompt_template_replaces_variables_once_without_hidden_suffix():
+    from breezetts_test.breeze_control import control_prompt
+
+    profile = {
+        "name": "Example voice",
+        "mode": "fixed",
+        "tags": ("[laughs]",),
+        "styles": ["happy", "sad"],
+        "note": "voice-specific note",
+    }
+    assert (
+        control_prompt(local=False, profile=profile, prompt="Only {platform_name}.")
+        == "Only Example voice."
+    )
+    result = control_prompt(
+        local=False,
+        profile=profile,
+        prompt="{platform_rules}\n{audio_tags}\n{style_values}\n{control_syntax}\n{output_protocol}\n{user_message}\n{passage}",
+        user_message="literal {audio_tags}",
+        passage="original {platform_name}",
+    )
+    assert "STRICT fixed styles" in result and "never mandatory" in result
+    assert "[laughs]\nhappy, sad" in result
+    assert '"literal {audio_tags}"' in result and '"original {platform_name}"' in result
+    assert "Both fields are optional" in result
+    assert "{control_syntax}" not in result

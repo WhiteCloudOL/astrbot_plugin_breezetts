@@ -17,20 +17,21 @@ DELIVERY_ACK = (
 
 
 def parse_speech(
-    text: str, *, preserve_controls: bool = False
+    text: str, *, preserve_controls: bool = False, tags: tuple[str, ...] | None = None
 ) -> list[tuple[str, bool]]:
     """Remove speech markup and mark only balanced spoken blocks.
 
     Args:
         text: Model output, including optional speech tags.
-        preserve_controls: Keep Breeze controls for synthesis planning only.
+        preserve_controls: Keep native controls for synthesis planning only.
+        tags: Selected provider native controls.
 
     Returns:
         Ordered text spans and whether each is eligible for synthesis. Incomplete
         blocks retain their text, nested blocks form one span, and code stays text.
     """
     if not preserve_controls:
-        text = clean_breeze_text(text)
+        text = clean_breeze_text(text, tags)
     text = ENCODED_TAG.sub(lambda match: f"<{match[1]}>", text)
     parts: list[tuple[str, bool]] = []
     pending = ""

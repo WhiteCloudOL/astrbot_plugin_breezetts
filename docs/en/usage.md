@@ -57,3 +57,41 @@ Generated audio and previews have configurable count and capacity limits, defaul
 ![Mobile workbench](../images/studio-mobile.png)
 
 See the [README](../../README.md) for installation, configuration fields, and chat commands
+
+
+## Expressive AstrBot TTS providers
+
+The existing Local API / BreezeBlue selector remains under Connection & Settings → Current Service. Select **AstrBot TTS Provider** to reuse an enabled MiniMax, ElevenLabs v3/v4, Fish, MiMo, instruction-capable OpenAI TTS, Gemini, Dashscope, Azure, expressive Volcengine voice, or GSVI provider. Models and voices must actually support the selected protocol; credentials and voice configuration remain in AstrBot.
+
+The former **Platform Controls (customizable)** accordion is now an **Edit Platform Controls** dialog. For Breeze, the table is a recommendation reference, not an exhaustive performance allowlist. The LLM may create additional descriptions using `[style:your own delivery description]`, `[语气:自由描述]`, or `instruction`, without registering them first. These become independent performance instructions; known native events remain in speech text. All controls are optional.
+
+A custom Breeze table changes the examples recommended to the LLM while retaining recognition of known native events. Breeze hides the fixed-style field. Closed native catalogs still replace their presets when customized, and fixed emotion values remain strictly validated. Catalogs are saved per platform and shared by its voices. Adjust Azure, Volcengine and GSVI values to the actual voice/model; choose Dashscope protocols according to the actual voice capability.
+
+Apply to Draft, then Save Configuration to persist. Cancel or Escape discards dialog edits. Restore Preset clears dialog overrides, which also requires applying and saving; blank fields use presets.
+
+Fixed platforms require exact API values such as `[style:happy]`; free platforms accept detailed natural-language directions such as `[style:quietly, with restrained excitement]`. Recognized native controls are removed from captions, transcripts and titles, preserving code, escaped literals and Markdown links. Retained text is sent before a separate voice message.
+
+The former Editable Speech Prompts accordion is replaced by **Edit Chat Speech Prompt** and **Edit Random Adaptation Prompt** dialogs under Chat & Runtime. Each dialog shows the complete template; platform rules, tags and output format appear as explicit `{variable}` tokens, with no hidden prompt suffix. Click a variable to insert it at the caret or replace selected text; each button includes an explanation.
+
+| Variable | Runtime content | Scope |
+| --- | --- | --- |
+| `{platform_name}` | Selected TTS platform / model preset name | Both |
+| `{platform_rules}` | Fixed-style or free-instruction rules and capability notes | Both |
+| `{audio_tags}` | Effective native tags, including custom replacements | Both |
+| `{style_values}` | Exact fixed style values, or a free-instruction description | Both |
+| `{control_syntax}` | Section direction, overall instruction, timing and caption rules | Both |
+| `{user_message}` | Quoted current user message, limited to 1000 characters | Both |
+| `{passage}` | Quoted selected dialogue | Random adaptation |
+| `{output_protocol}` | JSON format, optional controls and dialogue-preservation rules | Random adaptation |
+
+**Tags and directions are recommendations, never mandatory.** Plain narration is valid; adaptation may return `{}`, an empty instruction or the unchanged passage. Dynamic Tone must be enabled for controls, and random adaptation also requires Random Speech and LLM Adaptive Tone.
+
+Apply to Draft, then Save Configuration to persist. Cancel or Escape discards dialog edits; restoring defaults also requires applying and saving. Blank templates use defaults. Replacement is single-pass, literal JSON braces need no escaping, and unsupported variables are rejected. Quoted context is not treated as instructions.
+
+![Complete template and variable insertion](../images/prompt-editor-desktop.png)
+
+![Mobile prompt dialog](../images/prompt-editor-mobile.png)
+
+![Breeze reference controls dialog](../images/expression-dialog-desktop.png)
+
+![Mobile reference controls dialog](../images/expression-dialog-mobile.png)

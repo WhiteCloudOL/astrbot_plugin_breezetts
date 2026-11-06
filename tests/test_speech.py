@@ -12,7 +12,7 @@ import pytest
 pytest.importorskip("astrbot")
 
 from astrbot.api.event import MessageEventResult, ResultContentType
-from astrbot.api.message_components import At, Image, Plain, Record, Reply
+from astrbot.api.message_components import At, Image, Node, Nodes, Plain, Record, Reply
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.core.agent.message import Message, TextPart, dump_messages_with_checkpoints
 from astrbot.core.agent.tool import FunctionTool, ToolSet
@@ -185,7 +185,8 @@ async def test_probability_prompt_cache_and_tool_visibility(
     plugin.config["behavior"].update(auto_tts=False, tool_enabled=True)
     req = ProviderRequest(func_tool=tools, system_prompt="Stable persona")
     await plugin.prepare_speech_request(event_factory(), req)
-    assert req.func_tool is tools and req.extra_user_content_parts == []
+    assert req.func_tool is tools and len(req.extra_user_content_parts) == 1
+    assert "用户本轮明确请求语音" not in req.extra_user_content_parts[0].text
 
 
 async def test_clean_history_selective_chain_and_failure(
@@ -500,6 +501,289 @@ async def test_random_adaptive_tone_requires_both_switches_and_probability_hit(
     plugin.context.llm_generate.assert_not_awaited()
     assert calls == (["普通回复。"] if probability else [])
     await plugin.release_speech_audio(event)
+
+
+async def test_random_adaptation_adds_native_events_and_section_directions(
+    speech_plugin, event_factory, monkeypatch
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(
+        dynamic_tone=True,
+        random_tone_adaptive=True,
+        keep_text=True,
+        tone_provider_id="tone",
+        tone_prompt="先惊喜，再带着关切提醒，不要全程平读。\n{audio_tags}\n{control_syntax}\n{output_protocol}",
+    )
+    original = "你终于来了，今天真开心，也别忘了休息。"
+    marked = "[语气:带着惊喜轻快地说][轻笑]你终于来了，今天真开心，[语气:放慢一点，温柔而认真]也别忘了休息。"
+    plugin.context.llm_generate = AsyncMock(
+        return_value=LLMResponse(
+            role="assistant",
+            completion_text=json.dumps(
+                {"text": marked, "instruction": "像熟悉的朋友一样有互动感。"},
+                ensure_ascii=False,
+            ),
+        )
+    )
+    spy = AsyncMock(wraps=plugin.service.client.synthesize)
+    monkeypatch.setattr(plugin.service.client, "synthesize", spy)
+    event = event_factory("好久不见，今天终于能来找你啦")
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain(original)], result_content_type=ResultContentType.LLM_RESULT
+        )
+    )
+    await decorate_model_result(plugin, event)
+    await plugin.preserve_speech_order(event)
+    await event.send(event.get_result())
+    assert calls == ["[轻笑]你终于来了，今天真开心，", "也别忘了休息。"]
+    assert (
+        spy.await_args_list[0]
+        .args[0]["local"]["instruction"]
+        .endswith("带着惊喜轻快地说")
+    )
+    assert (
+        spy.await_args_list[1]
+        .args[0]["local"]["instruction"]
+        .endswith("放慢一点，温柔而认真")
+    )
+    assert event.sent[0][0].text == original
+    assert [type(chain[0]) for chain in event.sent] == [Plain, Record]
+    prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
+    assert (
+        "先惊喜，再带着关切提醒" in prompt and '"text"' in prompt and "[轻笑]" in prompt
+    )
+    assert plugin.config["local"]["instruction"] == ""
+    await plugin.release_speech_audio(event)
+
+
+@pytest.mark.parametrize(
+    "marked",
+    [
+        "[轻笑]你好呀！",
+        "[轻笑]你好呀。再说一句。",
+        "[开心]你好呀。",
+        "[语气:]你好呀。",
+        "[语气:温柔]" * 9 + "你好呀。",
+        None,
+    ],
+)
+async def test_adaptation_rejects_rewrites_and_malformed_controls(
+    speech_plugin, event_factory, marked, caplog
+):
+    plugin, _, _ = speech_plugin
+    plugin.config["behavior"].update(
+        dynamic_tone=True, random_tone_adaptive=True, tone_provider_id="tone"
+    )
+    plugin.context.llm_generate = AsyncMock(
+        return_value=LLMResponse(
+            role="assistant",
+            completion_text=json.dumps(
+                {"text": marked, "instruction": "欢乐地说"}, ensure_ascii=False
+            ),
+        )
+    )
+    assert await plugin.speech.adapt_random_tone(
+        event_factory(), "你好呀。", plugin.service.settings()
+    ) == ("你好呀。", "")
+    assert "using configured tone" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "marked,accepted",
+    [
+        ("[语气:俏皮][轻笑][耳语]你好呀。", True),
+        ("[语气:俏皮]你好呀。", False),
+        ("[语气:俏皮]你好呀。[轻笑]", False),
+        ("[语气:认真][轻笑]你好呀。", False),
+    ],
+)
+async def test_adaptation_preserves_existing_control_positions(
+    speech_plugin, event_factory, marked, accepted
+):
+    plugin, _, _ = speech_plugin
+    plugin.config["behavior"].update(
+        dynamic_tone=True, random_tone_adaptive=True, tone_provider_id="tone"
+    )
+    original = "[语气:俏皮][轻笑]你好呀。"
+    plugin.context.llm_generate = AsyncMock(
+        return_value=LLMResponse(
+            role="assistant",
+            completion_text=json.dumps(
+                {"text": marked, "instruction": "有交流感地说"}, ensure_ascii=False
+            ),
+        )
+    )
+    result = await plugin.speech.adapt_random_tone(
+        event_factory(), original, plugin.service.settings()
+    )
+    assert result == ((marked, "有交流感地说") if accepted else (original, ""))
+
+
+@pytest.mark.parametrize("tool_enabled", [False, True])
+async def test_custom_speech_prompt_reaches_model_without_polluting_history(
+    speech_plugin, event_factory, tool_enabled
+):
+    plugin, _, _ = speech_plugin
+    plugin.config["behavior"].update(
+        dynamic_tone=True,
+        tool_enabled=tool_enabled,
+        speech_prompt="主动演绎细腻的惊喜，带一点忍不住的笑意。\n{audio_tags}\n{control_syntax}",
+    )
+    tools = (
+        ToolSet(
+            tools=[FunctionTool(name="breeze_tts", description="Voice", parameters={})]
+        )
+        if tool_enabled
+        else None
+    )
+    request = ProviderRequest(
+        system_prompt="Stable persona", prompt="我回来啦", func_tool=tools
+    )
+    event = event_factory("我回来啦")
+    await plugin.prepare_speech_request(event, request)
+    await plugin.prepare_speech_request(event, request)
+    assert len(request.extra_user_content_parts) == 1
+    text = request.extra_user_content_parts[0].text
+    assert "主动演绎细腻的惊喜" in text and "[轻笑]" in text and "[语气:描述]" in text
+    if not tool_enabled:
+        assert (
+            "本轮已抽中概率语音" in text
+            and "可按聊天语境主动调用 breeze_tts" not in text
+        )
+    assert request.system_prompt == "Stable persona"
+    saved = dump_messages_with_checkpoints(
+        [
+            Message(
+                role="user",
+                content=[TextPart(text="我回来啦"), *request.extra_user_content_parts],
+            )
+        ]
+    )
+    assert "主动演绎" not in str(saved)
+
+
+async def test_final_send_hides_fragmented_controls_in_text_only_replies(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(auto_tts=False, tool_enabled=False)
+    event = event_factory("文字回复")
+    await plugin.clean_speech_response(
+        event, LLMResponse(role="assistant", completion_text="普通文字。")
+    )
+    await event.send(
+        MessageEventResult(
+            chain=[
+                Plain("[语"),
+                Plain("气:温柔][轻笑]你好呀。"),
+                Plain(" `[笑]` [笑](https://example.com) [普通括号]"),
+            ]
+        )
+    )
+    text = "".join(part.text for part in event.sent[0])
+    assert text == "你好呀。 `[笑]` [笑](https://example.com) [普通括号]"
+    assert not calls
+    event.sent.clear()
+    assert (
+        await event.send(
+            MessageEventResult(chain=[Reply(id="source"), Plain("[笑][语气:温柔]")])
+        )
+        is True
+    )
+    assert not event.sent
+
+
+async def test_forwarded_text_and_transcripts_hide_controls_without_mutation(
+    speech_plugin,
+):
+    plugin, _, _ = speech_plugin
+    image = Image.fromURL("https://example.com/image.png")
+    voice = Record.fromFileSystem("other.wav", text="[耳语]转写正文")
+    node = Node(
+        uin="bot",
+        name="Bot",
+        content=[Plain("[语"), Plain("气:坚定][唱歌]正文"), image],
+    )
+    chain = [Nodes([node]), voice]
+    cleaned = plugin.speech.clean_chain(chain)
+    assert cleaned[0].nodes[0].content[0].text == "正文"
+    assert cleaned[0].nodes[0].content[1] is node.content[2]
+    assert cleaned[1].text == "转写正文"
+    assert voice.text == "[耳语]转写正文" and node.content[0].text == "[语"
+
+
+@pytest.mark.parametrize("style", ["happy", "warm and excited"])
+async def test_fixed_provider_random_adaptation_and_caption_filtering(
+    speech_plugin, event_factory, tmp_path, wav_audio, style
+):
+    from test_expression import FileProvider
+
+    plugin, local_calls, _ = speech_plugin
+    path = tmp_path / "host-voice.wav"
+    path.write_bytes(wav_audio)
+    provider = FileProvider("minimax_tts_api", "speech-2.8-hd", path)
+    plugin.config["backend"] = "provider"
+    plugin.config["provider"]["provider_id"] = "voice"
+    plugin.config["expression"]["minimax_tags"] = "(custom event)"
+    plugin.config["behavior"].update(
+        dynamic_tone=True,
+        random_tone_adaptive=True,
+        keep_text=True,
+        tone_provider_id="tone",
+    )
+    plugin.context.get_provider_by_id = lambda _: provider
+    plugin.context.llm_generate = AsyncMock(
+        return_value=LLMResponse(
+            role="assistant",
+            completion_text=json.dumps(
+                {"text": "(custom event)你好呀。", "instruction": style}
+            ),
+        )
+    )
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("你好呀。")], result_content_type=ResultContentType.LLM_RESULT
+        )
+    )
+    await decorate_model_result(plugin, event)
+    await plugin.preserve_speech_order(event)
+    await event.send(event.get_result())
+    assert [type(chain[0]) for chain in event.sent] == [Plain, Record]
+    assert event.sent[0][0].text == "你好呀。"
+    assert provider.calls[0]["voice"]["emotion"] == (
+        "happy" if style == "happy" else "calm"
+    )
+    assert provider.calls[0]["text"] == (
+        "(custom event)你好呀。" if style == "happy" else "你好呀。"
+    )
+    assert not local_calls
+    prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
+    assert "STRICT fixed styles" in prompt and "(custom event)" in prompt
+    assert "FREE delivery instructions" not in prompt
+
+
+async def test_late_decorator_controls_are_cleaned_even_when_speech_is_disabled(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(auto_tts=False, tool_enabled=False)
+    event = event_factory()
+    await plugin.clean_speech_response(
+        event, LLMResponse(role="assistant", completion_text="你好呀。")
+    )
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("[轻笑]你好呀。")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await plugin.auto_speak(event)
+    assert event.get_result().get_plain_text() == "你好呀。"
+    event.get_result().chain[0].text = "[耳语]你好呀。"
+    await plugin.preserve_speech_order(event)
+    assert event.get_result().get_plain_text() == "你好呀。" and not calls
 
 
 @pytest.mark.parametrize(
@@ -920,7 +1204,11 @@ async def test_explicit_voice_hint_is_temporary_and_request_scoped(
     event = event_factory(text)
     await plugin.prepare_speech_request(event, request)
     await plugin.prepare_speech_request(event, request)
-    assert len(request.extra_user_content_parts) == int(expected)
+    assert len(request.extra_user_content_parts) == int(
+        plugin.speech.turn(event).autonomous
+    )
+    hint = "".join(part.text for part in request.extra_user_content_parts)
+    assert ("用户本轮明确请求语音" in hint) is expected
     assert request.system_prompt == "Stable persona"
     assert request.contexts == [{"role": "assistant", "content": "History"}]
     if expected:
@@ -935,7 +1223,8 @@ async def test_explicit_voice_hint_is_temporary_and_request_scoped(
     )
     assert dumped[0]["content"] == [{"type": "text", "text": text}]
     await plugin.prepare_speech_request(event_factory("普通文字"), request)
-    assert request.extra_user_content_parts == []
+    assert len(request.extra_user_content_parts) == 1
+    assert "用户本轮明确请求语音" not in request.extra_user_content_parts[0].text
 
 
 @pytest.mark.parametrize(
@@ -1624,7 +1913,8 @@ async def test_quoted_voice_request_does_not_inject_current_turn_hint(
         system_prompt="Stable persona", func_tool=ToolSet(tools=[tool])
     )
     await plugin.prepare_speech_request(event, req)
-    assert not req.extra_user_content_parts
+    assert len(req.extra_user_content_parts) == 1
+    assert "用户本轮明确请求语音" not in req.extra_user_content_parts[0].text
     assert req.system_prompt == "Stable persona"
 
 
@@ -1874,3 +2164,79 @@ async def test_random_opt_out_explains_why_selection_changed(
     assert not plugin.speech.turn(event).random_selected
     assert "reason=user_opt_out" in caplog.text
     assert not calls
+
+
+@pytest.mark.parametrize(
+    "response", ["{}", '{"instruction":""}', '{"text":"自然朗读这句台词。"}']
+)
+async def test_random_adaptation_may_choose_no_tags_or_direction(
+    speech_plugin, event_factory, response, caplog, monkeypatch
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(
+        dynamic_tone=True,
+        random_tone_adaptive=True,
+        keep_text=True,
+        tone_provider_id="tone",
+    )
+    plugin.context.llm_generate = AsyncMock(
+        return_value=LLMResponse(role="assistant", completion_text=response)
+    )
+    spy = AsyncMock(wraps=plugin.service.client.synthesize)
+    monkeypatch.setattr(plugin.service.client, "synthesize", spy)
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("自然朗读这句台词。")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await decorate_model_result(plugin, event)
+    await plugin.preserve_speech_order(event)
+    await event.send(event.get_result())
+    assert calls == ["自然朗读这句台词。"]
+    assert spy.await_args.args[0]["local"]["instruction"] == ""
+    assert [type(chain[0]) for chain in event.sent] == [Plain, Record]
+    assert event.sent[0][0].text == "自然朗读这句台词。"
+    assert "adaptation failed" not in caplog.text
+    prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
+    assert "Both fields are optional" in prompt and "never mandatory" in prompt
+
+
+async def test_breeze_adaptation_uses_unlisted_free_direction_with_curated_reference(
+    speech_plugin, event_factory, monkeypatch
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(
+        dynamic_tone=True,
+        random_tone_adaptive=True,
+        keep_text=True,
+        tone_provider_id="tone",
+    )
+    plugin.config["expression"]["breeze_local_tags"] = "[咳嗽]"
+    direction = "忍着突然重逢的惊喜，先轻快再放缓，轻声关切对方"
+    original = "好久不见，你最近还好吗？"
+    marked = f"[语气:{direction}][轻笑]{original}"
+    plugin.context.llm_generate = AsyncMock(
+        return_value=LLMResponse(
+            role="assistant",
+            completion_text=json.dumps({"text": marked}, ensure_ascii=False),
+        )
+    )
+    spy = AsyncMock(wraps=plugin.service.client.synthesize)
+    monkeypatch.setattr(plugin.service.client, "synthesize", spy)
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain(original)], result_content_type=ResultContentType.LLM_RESULT
+        )
+    )
+    await decorate_model_result(plugin, event)
+    await plugin.preserve_speech_order(event)
+    await event.send(event.get_result())
+    assert calls == ["[轻笑]" + original]
+    assert spy.await_args.args[0]["local"]["instruction"] == direction
+    assert event.sent[0][0].text == original
+    assert [type(chain[0]) for chain in event.sent] == [Plain, Record]
+    prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
+    assert "not an exhaustive allowlist" in prompt and "[咳嗽]" in prompt
