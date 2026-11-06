@@ -14,6 +14,9 @@ let disposed = false;
 let noticeTimer;
 let playbackSequence = 0;
 let settingsSaving = false;
+let editingPrompt;
+let expressionProfile;
+let editingExpression;
 const clearKeys = new Set();
 const titles = {
   studio: "合成试听",
@@ -83,8 +86,8 @@ function updateSummary() {
   $("random-tone-hint").textContent = missingToneSettings.length
     ? `还需开启“${missingToneSettings.join("”和“")}”才会生效；开启自适应时可在弹窗中一并启用。`
     : draft.behavior.random_tone_adaptive
-      ? "已启用：概率命中后调用所选 LLM 选择语气，台词保持原样；20 秒超时或失败回退默认语气。"
-      : "开启后，概率命中时调用所选 LLM 选择语气，台词保持原样；20 秒超时或失败回退默认语气。";
+      ? "已启用：概率命中后请所选 LLM 推荐语气或标签，可不添加，台词保持原样；20 秒超时或失败回退默认语气。"
+      : "开启后，概率命中时请所选 LLM 推荐语气或标签，可不添加，台词保持原样；20 秒超时或失败回退默认语气。";
   $("fixed-seed-field").hidden = draft.local.random_seed;
   $("seed").disabled = draft.local.random_seed;
   for (const scope of ["private", "group"]) {
@@ -96,17 +99,20 @@ function updateSummary() {
     $(`${scope}-trigger-probability`).min = inherit ? "-1" : "0";
   }
   const cloud = draft.backend === "cloud";
-  const backendName = cloud ? "BreezeBlue 官方" : "本地 API";
+  const hosted = draft.backend === "provider";
+  const backendName = hosted ? "AstrBot TTS" : cloud ? "BreezeBlue 官方" : "本地 API";
+  $("provider-settings").hidden = !hosted;
+  fillExpression();
   $("backend-label").textContent = backendName;
   $("studio-backend").textContent = backendName;
-  $("local-settings").hidden = cloud;
+  $("local-settings").hidden = cloud || hosted;
   $("cloud-settings").hidden = !cloud;
-  $("local-voices-panel").hidden = cloud;
+  $("local-voices-panel").hidden = cloud || hosted;
   $("cloud-voices-panel").hidden = !cloud;
-  $("voice-page-title").textContent = cloud
+  $("voice-page-title").textContent = hosted ? "AstrBot 提供商音色" : cloud
     ? "BreezeBlue 官方音色"
     : "本地参考音色";
-  $("voice-page-hint").textContent = cloud
+  $("voice-page-hint").textContent = hosted ? "请在 AstrBot 的 TTS 提供商配置中调整音色和声音参数。" : cloud
     ? "查询账号音色，或创建克隆与设计音色"
     : "上传录音、填写准确文字稿，再设为当前音色";
 
@@ -116,28 +122,46 @@ function updateSummary() {
   const voice = catalog.voices.find(
     (item) => item.voice_id === draft.cloud.voice_id,
   );
-  $("selected-voice").textContent = cloud
+  $("selected-voice").textContent = hosted ? draft.provider.provider_id || "请选择 TTS 提供商" : cloud
     ? voice?.name || draft.cloud.voice_id || "尚未选择官方音色"
     : draft.local.mode === "reference"
       ? reference?.name || "尚未选择参考录音"
       : draft.local.mode === "design"
         ? "文字声音设计"
         : "普通朗读";
-  $("voice-hint").textContent = cloud
+  $("voice-hint").textContent = hosted ? "音色在 AstrBot 提供商配置中调整。" : cloud
     ? "使用官方已保存音色，支持表演指令与语速控制。"
     : draft.local.mode === "reference"
       ? reference?.ref_text
         ? "参考录音与文字稿已配对。"
         : "请在音色库编辑录音，填写准确文字稿。"
       : "在连接与设置中调整声音描述和 CFG。";
-  $("synthesis-hint").textContent = cloud
+  $("synthesis-hint").textContent = hosted ? "复用 AstrBot TTS · PCM WAV" : cloud
     ? `官方输出 · ${draft.cloud.output_format.toUpperCase()} · ${draft.cloud.delivery}`
     : "本地 PCM 自动封装为 WAV";
   $("text-count").textContent =
     `${Array.from($("synthesis-text").value).length} / ${draft.behavior.max_characters}`;
 }
 
+function fillExpression() {
+  let preset = draft.backend === "provider"
+    ? state.tts_providers?.find((p) => p.id === draft.provider.provider_id)?.profile
+    : state.expression_presets?.[`breeze_${draft.backend}`];
+  const dashscope = draft.backend === "provider" && state.tts_providers?.find((p) => p.id === draft.provider.provider_id)?.type === "dashscope_tts";
+  $("provider-protocol").hidden = !dashscope;
+  if (dashscope && draft.provider.preset) preset = {...state.expression_presets[draft.provider.preset], key: draft.provider.preset};
+  const key = preset?.key || (draft.backend === "provider" ? "" : `breeze_${draft.backend}`);
+  $("expression-controls").hidden = !key;
+  if (!key) { expressionProfile = undefined; return; }
+  expressionProfile = {...preset, key};
+  $("expression-policy").textContent = `${preset.name} · ${preset.tag_policy === "reference" ? "推荐参考，允许表外自由语气" : preset.mode === "fixed" ? "严格固定值" : "自由指令"}。${preset.note}`;
+}
+
 function fillSettings() {
+  const tts = new Map((state.tts_providers || []).map((p) => [p.id, `${p.name} · ${p.profile.name}`]));
+  if (draft.provider.provider_id && !tts.has(draft.provider.provider_id)) tts.set(draft.provider.provider_id, `${draft.provider.provider_id}（不可用或模型不支持）`);
+  $("tts-provider").replaceChildren(new Option("请选择已配置的 TTS 提供商", ""), ...Array.from(tts, ([id, name]) => new Option(name, id)));
+  fillExpression();
   const providers = new Map((state.llm_providers || []).map((provider) => [provider.id, provider.name]));
   if (draft.behavior.tone_provider_id && !providers.has(draft.behavior.tone_provider_id))
     providers.set(draft.behavior.tone_provider_id, `${draft.behavior.tone_provider_id}（当前不可用）`);
@@ -320,7 +344,7 @@ function renderAudio() {
     title.textContent = item.name;
     const meta = document.createElement("span");
     meta.className = "audio-meta";
-    meta.textContent = `${item.kind === "preview" ? "音色预览" : item.backend === "cloud" ? "官方合成" : "本地合成"} · ${item.extension.toUpperCase()} · ${(item.size / 1024).toFixed(0)} KiB · ${new Date(item.created * 1000).toLocaleString()}`;
+    meta.textContent = `${item.kind === "preview" ? "音色预览" : item.backend === "provider" ? "AstrBot TTS" : item.backend === "cloud" ? "官方合成" : "本地合成"} · ${item.extension.toUpperCase()} · ${(item.size / 1024).toFixed(0)} KiB · ${new Date(item.created * 1000).toLocaleString()}`;
     info.append(title, meta);
     const controls = document.createElement("div");
     controls.className = "audio-actions";
@@ -515,7 +539,8 @@ if (!bridge) {
       const [group, key] = element.dataset.config.split(".");
       const section = key ? state.config?.[group] : state.config;
       return !section || !Object.hasOwn(section, key || group);
-    })) {
+    }) || !state.prompt_variables || !state.prompt_defaults || !state.config?.expression || !state.expression_presets ||
+        typeof state.config?.behavior?.speech_prompt !== "string" || typeof state.config?.behavior?.tone_prompt !== "string") {
       throw new Error("插件文件已更新，请在插件管理中重载 BreezeTTS，再刷新工作台");
     }
     draft = structuredClone(state.config);
@@ -585,6 +610,69 @@ $("confirm-enable-tone").addEventListener("click", () => {
 $("enable-tone-dialog").addEventListener("close", () => {
   $("random-tone-adaptive").checked = draft.behavior.random_tone_adaptive;
 });
+document.querySelectorAll("[data-edit-prompt]").forEach((button) =>
+  button.addEventListener("click", () => {
+    editingPrompt = button.dataset.editPrompt;
+    $("speech-prompt-title").textContent = editingPrompt === "speech_prompt" ? "编辑聊天语音提示词" : "编辑概率语音自适应提示词";
+    $("prompt-editor").value = draft.behavior[editingPrompt];
+    $("prompt-editor-error").hidden = true;
+    $("prompt-variable-list").replaceChildren();
+    for (const [name, variable] of Object.entries(state.prompt_variables)) {
+      if (!variable.scope.includes(editingPrompt)) continue;
+      const row = document.createElement("div");
+      row.className = "prompt-variable";
+      const insert = document.createElement("button");
+      insert.type = "button";
+      insert.className = "text-button";
+      insert.textContent = `{${name}}`;
+      insert.dataset.insertVariable = name;
+      insert.title = `插入：${variable.label}`;
+      insert.addEventListener("click", () => {
+        const editor = $("prompt-editor");
+        const token = `{${name}}`;
+        if (editor.value.length - (editor.selectionEnd - editor.selectionStart) + token.length > editor.maxLength) {
+          $("prompt-editor-error").textContent = "提示词最多 6000 字符，请先缩短内容。";
+          $("prompt-editor-error").hidden = false;
+          return;
+        }
+        editor.setRangeText(token, editor.selectionStart, editor.selectionEnd, "end");
+        editor.focus();
+        $("prompt-editor-error").hidden = true;
+      });
+      const description = document.createElement("small");
+      description.textContent = `${variable.label}：${variable.description}`;
+      row.append(insert, description);
+      $("prompt-variable-list").append(row);
+    }
+    $("speech-prompt-dialog").showModal();
+    $("prompt-editor").focus();
+    $("prompt-editor").setSelectionRange(0, 0);
+  }),
+);
+$("restore-prompt").addEventListener("click", () => {
+  $("prompt-editor").value = state.prompt_defaults[editingPrompt];
+  $("prompt-editor-error").hidden = true;
+  $("prompt-editor").focus();
+});
+$("cancel-prompt").addEventListener("click", () => $("speech-prompt-dialog").close());
+$("apply-prompt").addEventListener("click", () => {
+  const value = $("prompt-editor").value;
+  const unsupported = [...value.matchAll(/\{([A-Za-z_][A-Za-z_0-9]*)\}/g)]
+    .map((match) => match[1]).filter((name) => !state.prompt_variables[name]?.scope.includes(editingPrompt));
+  if (value.length > 6000 || unsupported.length) {
+    $("prompt-editor-error").textContent = unsupported.length
+      ? `此提示词不支持的变量：${[...new Set(unsupported)].map((name) => `{${name}}`).join("、")}`
+      : "提示词最多 6000 字符。";
+    $("prompt-editor-error").hidden = false;
+    return;
+  }
+  if (draft.behavior[editingPrompt] !== value) {
+    draft.behavior[editingPrompt] = value;
+    markDirty();
+  }
+  $("speech-prompt-dialog").close();
+});
+$("speech-prompt-dialog").addEventListener("close", () => { editingPrompt = undefined; });
 
 document.querySelectorAll("[data-probability-scope]").forEach((element) =>
   element.addEventListener("change", () => {
@@ -596,6 +684,63 @@ document.querySelectorAll("[data-probability-scope]").forEach((element) =>
     markDirty();
   }),
 );
+$("edit-expression").addEventListener("click", () => {
+  if (!expressionProfile) return;
+  editingExpression = expressionProfile;
+  const reference = editingExpression.tag_policy === "reference";
+  $("expression-title").textContent = `编辑 ${editingExpression.name} 控制表`;
+  $("expression-description").textContent = reference
+    ? "Breeze 使用自由语气控制，表格只是推荐参考，并非穷举白名单。LLM 可以自行编写表外表现，用 [语气:自由描述] 或 instruction 传递，无需先登记；标签和指令均可不添加。"
+    : `此平台${editingExpression.mode === "fixed" ? "使用固定情绪允许值" : "支持自由语气指令"}；原生事件按实际模型支持的标签拼写传递。${editingExpression.note}`;
+  $("custom-tags-label").textContent = reference ? "原生标签推荐参考（可选）" : "原生正文标签";
+  $("custom-tags-hint").textContent = reference
+    ? "每行填写一个完整原生标签。非空内容仅调整给 LLM 的推荐参考，不限制表外自由语气；已知原生事件仍可识别并隐藏。自由描述无需加入表中，请写成 [语气:描述]。"
+    : "每行一个当前模型实际支持的完整标签，例如 [laughs]。非空表替换此平台预设，聊天文字会隐藏这些标签；自由描述使用 [语气:描述]。";
+  $("custom-tags").value = draft.expression[`${editingExpression.key}_tags`];
+  $("custom-tags").placeholder = (editingExpression.prompt_tags || editingExpression.tags).join("\n") || "当前模型没有预设原生正文标签，可按模型文档填写。";
+  $("custom-styles").value = draft.expression[`${editingExpression.key}_styles`];
+  $("custom-styles").placeholder = editingExpression.styles.join("\n");
+  $("custom-styles-field").hidden = editingExpression.mode !== "fixed";
+  $("custom-styles").disabled = editingExpression.mode !== "fixed";
+  $("expression-error").hidden = true;
+  $("expression-dialog").showModal();
+  $("custom-tags").focus();
+});
+$("reset-expression").addEventListener("click", () => {
+  $("custom-tags").value = "";
+  $("custom-styles").value = "";
+  $("expression-error").hidden = true;
+});
+$("cancel-expression").addEventListener("click", () => $("expression-dialog").close());
+$("apply-expression").addEventListener("click", () => {
+  if (!editingExpression) return;
+  const fields = editingExpression.mode === "fixed" ? ["tags", "styles"] : ["tags"];
+  for (const field of fields) {
+    const value = $(`custom-${field}`).value;
+    const lines = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    let error = "";
+    if (value.length > 12000 || lines.length > 100 || /[\x00-\x09\x0b\x0c\x0e-\x1f]/.test(value)) error = "控制表最多 100 行、12000 字符，不能包含控制字符。";
+    else if (field === "tags" && lines.some((line) => !/^(?:\[[^\[\]<>`]{1,100}\]|\([^()<>`]{1,100}\))$/.test(line) || /^\[(?:语气|style|話し方)\s*[:：]/i.test(line))) error = "每行填写一个完整原生标签，例如 [laughs]；自由语气通过 [语气:描述] 使用，无需填入标签表。";
+    else if (field === "styles" && lines.some((line) => line.length > 100 || /[\[\]<>()`]/.test(line))) error = "每行填写一个平台实际支持的情绪值，不能包含标记。";
+    if (error) {
+      $("expression-error").textContent = error;
+      $("expression-error").hidden = false;
+      return;
+    }
+  }
+  let changed = false;
+  for (const field of fields) {
+    const key = `${editingExpression.key}_${field}`;
+    const value = $(`custom-${field}`).value;
+    if (draft.expression[key] !== value) {
+      draft.expression[key] = value;
+      changed = true;
+    }
+  }
+  if (changed) markDirty();
+  $("expression-dialog").close();
+});
+$("expression-dialog").addEventListener("close", () => { editingExpression = undefined; });
 for (const backend of ["local", "cloud"]) {
   $(`clear-${backend}-key`).addEventListener("click", () => {
     if (clearKeys.has(backend)) {
@@ -745,14 +890,14 @@ $("test-connection").addEventListener("click", () =>
     $("connection-result").textContent = "正在检查……";
     try {
       const result = await bridge.apiPost("connection", {});
-      $("connection-result").textContent = "连接成功";
+      $("connection-result").textContent = result.backend === "provider" ? "提供商配置可用（尚未合成）" : "连接成功";
       if (result.models)
         $("models").replaceChildren(
           ...result.models.map(
             (item) => new Option(item.model_id, item.model_id),
           ),
         );
-      notice("连接成功，配置已保存。");
+      notice(result.backend === "provider" ? "提供商及控制协议已就绪，请合成试听验证上游连接。" : "连接成功，配置已保存。");
     } catch (error) {
       $("connection-result").textContent = "连接失败";
       throw error;

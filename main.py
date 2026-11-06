@@ -14,11 +14,11 @@ from astrbot.core.agent.message import TextPart
 from astrbot.core.agent.tool import ToolSet
 from astrbot.core.platform.message_type import MessageType
 
-from .breeze_control import clean_breeze_text, control_prompt
+from .breeze_control import control_prompt
 from .service import BreezeService
 from .settings import BreezeError
 from .speech import TURN_KEY, SpeechDelivery
-from .speech_markup import parse_speech, strip_delivery_ack
+from .speech_markup import strip_delivery_ack
 from .web import WorkbenchAPI
 
 PLUGIN_NAME = "astrbot_plugin_breezetts"
@@ -89,7 +89,7 @@ class BreezeTTS(Star):
             state = self.speech.turn(event)
             state.source = "command"
             assert self.service.store is not None
-            caption = clean_breeze_text(parts[1]).strip()
+            caption = self.service.clean_text(parts[1]).strip()
             if self.service.settings()["behavior"]["keep_text"] and caption:
                 yield event.plain_result(caption)
             # Caption delivery must not release the pending voice reservation.
@@ -98,7 +98,7 @@ class BreezeTTS(Star):
                 [
                     Record.fromFileSystem(
                         self.service.store.path(item["id"]),
-                        text=clean_breeze_text(parts[1]),
+                        text=self.service.clean_text(parts[1]),
                     )
                 ]
             )
@@ -118,7 +118,7 @@ class BreezeTTS(Star):
     async def breeze_tts(
         self, event: AstrMessageEvent, text: str, instruction: str = ""
     ):
-        """Synthesize and send a real voice message using BreezeTTS workbench settings.
+        """Perform expressive dialogue with BreezeTTS and send a real voice message.
 
         Choose only the passage to speak. Other content can remain ordinary text.
         This tool uses its own service and voice configuration. Its result reports
@@ -126,16 +126,21 @@ class BreezeTTS(Star):
         conversational content and describe speech availability from the tool result.
         After success, continue only with new content that has not been delivered.
         Keep delivery acknowledgments and bracketed status messages out of dialogue.
-        When dynamic tone is enabled, instruction sets overall delivery and inline
-        [语气:温柔] / [style:gentle] markers change subsequent sections. Native events
-        such as [轻笑], [耳语], [唱歌], [停顿] or (laugh) stay in text. Use directions
-        in the dialogue language, punctuation for timing, and no invented pause durations.
+        Use voice proactively for fitting conversation, emotion and roleplay; respect
+        text-only requests. Follow the current provider's temporary control table.
+        Fixed platforms require exact allowed values; free platforms accept nuanced
+        natural-language performance. When dynamic tone is enabled, consider suitable
+        delivery intent, emotional intensity and rhythm when helpful. Tags and instructions are optional; plain narration is valid. instruction sets overall
+        delivery; [语气:description] / [style:direction] changes subsequent sections.
+        Use only the selected model's exact native event spellings. For free styles,
+        match the dialogue language; fixed API values retain their required spelling.
+        Use punctuation for timing, with no invented pause durations.
         Dynamic controls are ignored when disabled. Captions are sent before voice,
         in separate messages. A failed call is not a reason to repeat it in this turn.
 
         Args:
             text(string): The exact text to speak, up to the configured character limit.
-            instruction(string): Optional delivery direction, at most 200 characters; requires dynamic tone.
+            instruction(string): Overall performance direction or one exact allowed style value, up to 200 characters. Follow current provider rules. Requires dynamic tone.
         """
         return await self.speech.tool(event, text, instruction)
 
@@ -147,7 +152,11 @@ class BreezeTTS(Star):
             event: Incoming event whose reply may contain a spoken passage.
         """
         state = self.speech.turn(event)
-        if state.random_selected or state.autonomous:
+        if (
+            state.random_selected
+            or state.autonomous
+            or self.service.settings()["behavior"]["dynamic_tone"]
+        ):
             event.set_extra("enable_streaming", False)
 
     @filter.on_llm_request(priority=-(2**63))
@@ -161,6 +170,7 @@ class BreezeTTS(Star):
             req: Request whose stable system prompt and history stay unchanged.
         """
         state = self.speech.turn(event)
+        config = self.service.settings()
         components = getattr(event.message_obj, "message", None)
         current_text = (
             "".join(part.text for part in components if isinstance(part, Plain))
@@ -181,7 +191,7 @@ class BreezeTTS(Star):
                 )
             state.random_selected = state.autonomous = False
         # Turn-local opt-outs keep the tool catalog stable and reject execution instead.
-        if req.func_tool and not self.service.settings()["behavior"]["tool_enabled"]:
+        if req.func_tool and not config["behavior"]["tool_enabled"]:
             req.func_tool = ToolSet(
                 tools=[
                     tool for tool in req.func_tool.tools if tool.name != "breeze_tts"
@@ -206,13 +216,11 @@ class BreezeTTS(Star):
             )
         )
         # Final tool filters have run; temporary guidance matches executable tools.
-        dynamic_tool = bool(
-            state.autonomous
-            and req.func_tool
-            and req.func_tool.get_tool("breeze_tts")
-            and self.service.settings()["behavior"]["dynamic_tone"]
+        tool_available = bool(
+            state.autonomous and req.func_tool and req.func_tool.get_tool("breeze_tts")
         )
-        if (voice_requested or dynamic_tool) and not state.source:
+        random_dynamic = state.random_selected and config["behavior"]["dynamic_tone"]
+        if (tool_available or random_dynamic) and not state.source:
             instruction = (
                 marker + "BreezeTTS 可通过工作台中的服务与音色配置合成并发送真实语音。"
                 "当前语音能力和发送结果以 breeze_tts 工具返回为准，旧对话中关于未配置语音的说法不代表当前状态。"
@@ -223,18 +231,30 @@ class BreezeTTS(Star):
                 instruction += (
                     "用户本轮明确请求语音，请调用 breeze_tts 工具发送选中的简短内容。"
                 )
-            else:
+            elif tool_available:
                 instruction += (
-                    "仅在适合语音时调用 breeze_tts；普通文字回复不添加控制标记。"
+                    "可按聊天语境主动调用 breeze_tts；普通文字回复不添加控制标记。"
                 )
-            config = self.service.settings()
-            if config["behavior"]["dynamic_tone"]:
-                instruction += control_prompt(
-                    local=config["backend"] == "local",
-                    language=config["cloud"]["language_code"],
-                )
+            if random_dynamic:
+                instruction += "本轮已抽中概率语音，回复中的一段正文会自动合成；推荐按语境考虑局部语气和音频事件，也可自然朗读、不加标签，无需专门调用工具。"
+            instruction += control_prompt(
+                local=config["backend"] == "local",
+                language=config["cloud"]["language_code"],
+                prompt=config["behavior"]["speech_prompt"],
+                profile=self.service.profile(config),
+                user_message=current_text,
+            )
+            if not config["behavior"]["dynamic_tone"]:
+                instruction += "\n当前动态语调关闭：使用默认声音，不添加语气或音频事件标记，不传 instruction。"
             req.extra_user_content_parts.append(
                 TextPart(text=instruction + "</breezetts_turn>").mark_as_temp()
+            )
+            self.logger.debug(
+                "Breeze speech guidance injected (tool=%s, random=%s, dynamic=%s, characters=%s).",
+                tool_available,
+                random_dynamic,
+                config["behavior"]["dynamic_tone"],
+                len(instruction),
             )
 
     @filter.on_llm_response(priority=1100000)
@@ -257,25 +277,29 @@ class BreezeTTS(Star):
             state.model_response = state.model_response or (
                 resp.role == "assistant" and bool(raw.strip())
             )
+            if state.model_response:
+                self.speech.bind_delivery(event, clean_text=True)
             cleaned = strip_delivery_ack(raw)
             state.status_cleaned = state.status_cleaned or cleaned != raw
             raw = cleaned
             if raw != "".join(text for text, _ in state.plan):
-                state.plan = parse_speech(raw)
+                state.plan = self.speech.parse_speech(raw)
                 state.speech_inputs = {
-                    clean_breeze_text(text): text
+                    self.service.clean_text(text): text
                     for text, voice in reversed(
-                        parse_speech(raw, preserve_controls=True)
+                        self.speech.parse_speech(raw, preserve_controls=True)
                     )
-                    if clean_breeze_text(text) != text
+                    if self.service.clean_text(text) != text
                 }
             if resp.result_chain and any(
                 not isinstance(part, Plain) for part in resp.result_chain.chain
             ):
                 # The property setter moves all text before images and other media.
+                resp.result_chain.chain[:] = self.speech.clean_chain(
+                    resp.result_chain.chain
+                )
                 for part in resp.result_chain.chain:
                     if isinstance(part, Plain):
-                        part.text = "".join(text for text, _ in parse_speech(part.text))
                         part.text = strip_delivery_ack(part.text)
             else:
                 resp.completion_text = "".join(text for text, _ in state.plan)
@@ -302,7 +326,7 @@ class BreezeTTS(Star):
                 continue
             if isinstance(message.content, str):
                 message.content = "".join(
-                    text for text, _ in parse_speech(message.content)
+                    text for text, _ in self.speech.parse_speech(message.content)
                 )
                 if message is last_assistant:
                     message.content = strip_delivery_ack(message.content)
@@ -320,7 +344,9 @@ class BreezeTTS(Star):
                         part.text = ""
                 for part in message.content:
                     if isinstance(part, TextPart):
-                        part.text = "".join(text for text, _ in parse_speech(part.text))
+                        part.text = "".join(
+                            text for text, _ in self.speech.parse_speech(part.text)
+                        )
                         if message is last_assistant:
                             part.text = strip_delivery_ack(part.text)
 
@@ -342,6 +368,8 @@ class BreezeTTS(Star):
         """
         result = event.get_result()
         state = event.get_extra(TURN_KEY)
+        if result is not None and state and state.model_response:
+            result.chain[:] = self.speech.clean_chain(result.chain)
         if result is None or not result.chain or not state or not state.audio_ids:
             return
         if state.source in {"random", "tags"} and any(

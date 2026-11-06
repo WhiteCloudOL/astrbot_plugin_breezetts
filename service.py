@@ -12,7 +12,15 @@ from urllib.parse import quote
 from .breeze_audio import join_breeze_audio
 from .breeze_control import clean_breeze_text, parse_breeze_text
 from .client import BreezeClient
-from .settings import BreezeError, validate_config, validate_identifier
+from .expression import PRESETS, check_directions, expression_profile, provider_preset
+from .provider_audio import provider_audio
+from .settings import (
+    DEFAULTS,
+    PROMPT_VARIABLES,
+    BreezeError,
+    validate_config,
+    validate_identifier,
+)
 from .storage import AUDIO_LIMIT, AudioStore
 
 
@@ -112,6 +120,55 @@ class BreezeService:
         """
         return validate_config(dict(self.config))
 
+    def profile(
+        self, config: dict | None = None, *, require_provider: bool = False
+    ) -> dict:
+        """Resolve effective controls for prompts, captions, and synthesis.
+
+        Args:
+            config: Operation snapshot, or the current saved configuration.
+            require_provider: Reject an unavailable provider before synthesis.
+
+        Returns:
+            Public capabilities without any provider credentials.
+        """
+        config = config or self.settings()
+        provider = None
+        if config["backend"] == "provider" and self.context is not None:
+            provider = self.context.get_provider_by_id(
+                config["provider"]["provider_id"]
+            )
+        try:
+            return expression_profile(config, provider)
+        except BreezeError:
+            if require_provider:
+                raise
+            tags = {tag for preset in PRESETS.values() for tag in preset["tags"]}
+            for name, custom in config["expression"].items():
+                if name.endswith("_tags"):
+                    tags.update(
+                        line.strip() for line in custom.splitlines() if line.strip()
+                    )
+            return {
+                "key": "unavailable",
+                "name": "TTS unavailable",
+                "mode": "fixed",
+                "tags": tuple(sorted(tags)),
+                "styles": [],
+                "note": "Selected TTS provider is unavailable; select a supported model before using speech.",
+            }
+
+    def clean_text(self, text: str) -> str:
+        """Hide the current provider's controls in user-visible text.
+
+        Args:
+            text: Outgoing dialogue or a speech caption.
+
+        Returns:
+            Dialogue with recognized controls removed and literals preserved.
+        """
+        return clean_breeze_text(text, self.profile()["tags"])
+
     async def state(self) -> dict:
         """Return the workbench state with all credential values removed.
 
@@ -136,11 +193,52 @@ class BreezeService:
             for provider in self.context.get_all_providers():
                 meta = provider.meta()
                 providers.append({"id": meta.id, "name": meta.id})
+        tts_providers = []
+        if self.context is not None and hasattr(self.context, "get_all_tts_providers"):
+            for provider in self.context.get_all_tts_providers():
+                key = provider_preset(provider)
+                if key or provider.provider_config.get("type") == "dashscope_tts":
+                    provider_config = config | {
+                        "backend": "provider",
+                        "expression": DEFAULTS["expression"],
+                        "provider": {**config["provider"], "preset": ""},
+                    }
+                    try:
+                        preset = expression_profile(provider_config, provider)
+                    except BreezeError:
+                        preset = {
+                            "key": "",
+                            "name": "Dashscope（请选择音色协议）",
+                            "mode": "fixed",
+                            "tags": [],
+                            "styles": [],
+                            "note": "请按实际模型与音色选择指令协议。",
+                        }
+                    tts_providers.append(
+                        {
+                            "id": provider.meta().id,
+                            "name": provider.meta().id,
+                            "type": provider.provider_config.get("type"),
+                            "profile": preset,
+                        }
+                    )
+        presets = copy.deepcopy(PRESETS)
+        for backend in ("local", "cloud"):
+            presets["breeze_" + backend] = expression_profile(
+                config | {"backend": backend, "expression": DEFAULTS["expression"]}
+            )
         return {
+            "tts_providers": tts_providers,
+            "expression_presets": presets,
             "config": config,
             "credentials": credentials,
             "audio": items,
             "llm_providers": providers,
+            "prompt_variables": PROMPT_VARIABLES,
+            "prompt_defaults": {
+                name: DEFAULTS["behavior"][name]
+                for name in ("speech_prompt", "tone_prompt")
+            },
         }
 
     async def save_settings(self, draft: dict, clear_keys: list) -> dict:
@@ -207,6 +305,13 @@ class BreezeService:
         """
         config = self.settings()
         try:
+            if config["backend"] == "provider":
+                profile = self.profile(config, require_provider=True)
+                return {
+                    "backend": "provider",
+                    "profile": profile["name"],
+                    "status": "configured",
+                }
             if config["backend"] == "local":
                 health = await asyncio.wait_for(
                     self.client.request(config["local"], "GET", "../health"), 20
@@ -267,7 +372,18 @@ class BreezeService:
             raise BreezeError(
                 f"合成文字须为 1–{config['behavior']['max_characters']} 个字符。"
             )
-        sections = parse_breeze_text(text, enabled=config["behavior"]["dynamic_tone"])
+        host_provider = None
+        if config["backend"] == "provider":
+            if self.context is not None:
+                host_provider = self.context.get_provider_by_id(
+                    config["provider"]["provider_id"]
+                )
+            profile = expression_profile(config, host_provider)
+        else:
+            profile = self.profile(config, require_provider=True)
+        sections = parse_breeze_text(
+            text, enabled=config["behavior"]["dynamic_tone"], tags=profile["tags"]
+        )
         if (
             not sections
             or sum(len(part) for part, _ in sections)
@@ -284,6 +400,9 @@ class BreezeService:
             or any(ord(char) < 32 and char != "\n" for char in instruction)
         ):
             raise BreezeError("本次语气指令须为不超过 200 字符的文本。")
+        check_directions(
+            profile, instruction, *(direction for _, direction in sections)
+        )
         self.logger.debug(
             "Breeze synthesis planned (backend=%s, dynamic=%s, sections=%s, instruction=%s).",
             config["backend"],
@@ -322,6 +441,20 @@ class BreezeService:
                     for index, (fragment, direction) in enumerate(sections):
                         section_config = copy.deepcopy(config)
                         backend = section_config["backend"]
+                        if backend == "provider":
+                            combined = (
+                                direction or instruction
+                                if profile["mode"] == "fixed"
+                                else "\n".join(filter(None, (instruction, direction)))
+                            )
+                            output = await provider_audio(
+                                host_provider, fragment, combined, profile
+                            )
+                            outputs.append(output)
+                            size += len(output[0])
+                            if size > AUDIO_LIMIT:
+                                raise BreezeError("动态语调合成音频超过大小上限。")
+                            continue
                         key = "instruction" if backend == "local" else "instructions"
                         section_config[backend][key] = "\n".join(
                             value.strip()
@@ -402,7 +535,8 @@ class BreezeService:
                     audio,
                     extension,
                     "output",
-                    clean_breeze_text(text).strip()[:60] or "Breeze vocal event",
+                    clean_breeze_text(text, profile["tags"]).strip()[:60]
+                    or "Breeze vocal event",
                     backend=config["backend"],
                 )
                 if for_delivery:

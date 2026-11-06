@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5.0 — 2026-11-06
+
+- Reuse configured AstrBot expressive TTS providers with model-specific fixed-style, free-instruction, and native-event presets. Keep shared credentials, voice settings, and provider instances unchanged.
+- Treat Breeze control tables as recommendation references. Permit newly written performance directions through inline direction markers or per-call instructions without registration; tags and directions remain optional.
+- Replace the inline Speech Prompts accordion with Edit Chat Speech Prompt / Edit Random Adaptation Prompt dialogs, and replace the Platform Controls accordion with an Edit Platform Controls dialog. Support complete templates, documented variable insertion, reset, cancel/Escape, apply-to-draft, and saved configuration reload.
+- Filter native and custom controls from captions, transcripts, titles, and late-decorated replies while preserving literal code and links. Deliver retained text before a separate voice message.
+- Capture one host provider for all sections of a synthesis, flatten inline Fish/ElevenLabs directions, and propagate bounded Dashscope timeouts. Verify actual host-adapter and SDK request serialization, provider credential isolation, SSML escaping, and audio normalization.
+- Validate 424 local host/browser cases, isolated protocol cases, and real Breeze/LLM synthesis with saved settings left unchanged. Other provider accounts require their own listening checks; integration tests use mocked upstream responses.
+
 ## v1.4.1 — 2026-11-06
 
 - Keep the adaptive random tone switch accessible and offer a confirmation dialog to enable its missing prerequisites together. Cancel or Escape restores the switch to off without changing other settings; provider selection remains independently configurable.

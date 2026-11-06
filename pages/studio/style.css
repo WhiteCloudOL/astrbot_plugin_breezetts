@@ -1157,3 +1157,79 @@ dialog {
     scroll-behavior: auto !important;
   }
 }
+
+.prompt-dialog {
+  width: min(1040px, calc(100vw - 32px));
+  max-width: none;
+  max-height: 90vh;
+  overflow: auto;
+}
+.prompt-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr);
+  gap: 24px;
+}
+.prompt-editor-layout textarea {
+  min-height: 330px;
+  font-family: ui-monospace, monospace;
+}
+.prompt-variable {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.prompt-variable button {
+  font-family: ui-monospace, monospace;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.prompt-variable small {
+  display: block;
+  margin-top: 4px;
+}
+@media (max-width: 700px) {
+  .prompt-editor-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .prompt-editor-layout textarea {
+    min-height: 240px;
+  }
+}
+
+.prompt-dialog-footnote {
+  padding: 0 24px 16px;
+  font-size: 12px;
+}
+.prompt-dialog .dialog-actions {
+  flex-wrap: wrap;
+}
+
+.prompt-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.prompt-dialog > h2,
+.prompt-dialog > .dialog-actions,
+.prompt-dialog-footnote {
+  flex-shrink: 0;
+}
+.prompt-dialog > h2 {
+  margin: 0;
+}
+.prompt-dialog > .dialog-body {
+  min-height: 0;
+  overflow-y: auto;
+}
+.prompt-dialog-footnote {
+  margin: 0;
+}
+.prompt-dialog .error {
+  color: var(--error);
+}
+
+.expression-dialog {
+  width: min(780px, calc(100vw - 32px));
+}
+.expression-dialog textarea {
+  font-family: ui-monospace, monospace;
+}
