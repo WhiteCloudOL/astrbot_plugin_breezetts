@@ -92,7 +92,7 @@
       "voice_id": {
         "type": "string",
         "description": "官方音色 ID",
-        "hint": "在工作台同步并选择官方音色，也可手动填写。",
+        "hint": "可直接粘贴完整 voice_id 并保存，无需先同步目录，不限制前缀；首尾空白自动清理。请使用有权访问该音色的 API Key。",
         "default": ""
       },
       "model_id": {
@@ -211,7 +211,7 @@
       "tone_prompt": {
         "type": "text",
         "description": "概率语音自适应提示词",
-        "hint": "完整提示词模板，最多 6000 字符，留空使用默认。推荐按语境使用标签或语气，也可全部省略。可用变量：{platform_name}：当前语音平台、{platform_rules}：平台控制规则、{audio_tags}：原生标签表、{style_values}：固定情绪允许值、{control_syntax}：控制语法说明、{output_protocol}：自适应输出格式、{user_message}：本轮用户消息、{passage}：待朗读台词。建议在工作台的提示词弹窗编辑并插入变量。",
+        "hint": "完整提示词模板，最多 6000 字符，留空使用默认。推荐按语境使用标签或语气，也可全部省略。可用变量：{platform_name}：当前语音平台、{platform_rules}：平台控制规则、{audio_tags}：原生标签表、{style_values}：固定情绪允许值、{control_syntax}：控制语法说明、{output_protocol}：自适应输出格式、{user_message}：本轮用户消息、{passage}：待朗读台词。建议在工作台的提示词弹窗编辑并插入变量。 需保留 {output_protocol} 或明确要求等价 JSON；返回 Markdown、改写台词或添加空白会回退默认语气。",
         "default": "你是 {platform_name} 的语音表演导演，根据用户消息和待朗读台词，推荐贴合语境的自然表达。可以稍主动地考虑整体语气、分段变化和原生音频事件；这些都不是必须添加，自然朗读合适时保留原文，不加标签，instruction 可留空或省略。不要求每条语音带标签，不堆叠事件，不为加标签而改变表达。保留说话人的身份和声线。\n平台：{platform_name}\n平台规则：{platform_rules}\n固定情绪允许值：{style_values}\n可选原生标签：\n{audio_tags}\n\n{control_syntax}\n\n{output_protocol}"
       },
       "trigger_probability": {
@@ -302,7 +302,7 @@
           "cosyvoice_fixed"
         ],
         "default": "",
-        "hint": "通常留空自动识别。模型或音色支持指令但未自动识别时，按官方规范选择 qwen 自由指令、cosyvoice 复刻音色自由指令或 cosyvoice_fixed 固定情感。"
+        "hint": "建议留空自动识别；显式选择须与当前模型和音色已验证的协议一致，不能绕过能力校验。CosyVoice v3-plus 自定义音色不支持指令；v3-flash、v3.5-plus/flash 自定义音色支持自由指令，合并后最多 100 加权字符（汉字计 2，其他计 1）。"
       }
     }
   },

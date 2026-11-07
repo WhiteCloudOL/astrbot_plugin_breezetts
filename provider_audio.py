@@ -37,10 +37,7 @@ async def provider_audio(
     if provider is None:
         raise BreezeError("所选 TTS 提供商已不可用，请重新选择。")
     detected = provider_preset(provider)
-    if detected != profile["key"] and not (
-        provider.provider_config.get("type") == "dashscope_tts"
-        and profile["key"] in {"qwen", "cosyvoice", "cosyvoice_fixed"}
-    ):
+    if detected != profile["key"]:
         raise BreezeError("TTS 模型已更改，请刷新工作台并重新选择控制协议。")
     check_directions(profile, direction)
     instance = copy.copy(provider)
@@ -161,8 +158,6 @@ async def provider_audio(
 
                 if key == "cosyvoice_fixed" and direction:
                     direction = f"你说话的情感是{direction}。"
-                if len(direction) > 128:
-                    raise BreezeError("CosyVoice 指令不能超过 128 字符。")
                 synthesizer = SpeechSynthesizer(
                     model=provider.model_name,
                     voice=provider.voice,

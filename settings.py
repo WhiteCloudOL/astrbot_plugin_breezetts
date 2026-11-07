@@ -35,7 +35,7 @@ PROMPT_VARIABLES = {
     },
     "output_protocol": {
         "label": "自适应输出格式",
-        "description": "提供 JSON 格式及台词保留规则；允许不添加标签、留空或省略语气。建议保留。",
+        "description": "提供 JSON 输出及台词保留规则；请保留此变量或手写等价 JSON 契约。格式不符或改写台词会回退；可不加标签、留空或省略语气。",
         "scope": ["tone_prompt"],
     },
     "user_message": {
@@ -134,6 +134,7 @@ DEFAULTS = {
         "history_max_mb": 256,
     },
 }
+STREAM_FORMATS = {"pcm", "mp3", "wav"}
 FORMATS = {
     "wav",
     "mp3",
@@ -307,6 +308,10 @@ def validate_config(value: dict) -> dict:
             elif not 1 <= len(line) <= 100 or any(c in line for c in "[]<>()`"):
                 raise BreezeError("每行填写一个平台实际支持的情绪值，不能包含标记。")
     local, cloud = result["local"], result["cloud"]
+    # Clipboard padding is not part of the opaque ID; never infer a required prefix.
+    cloud["voice_id"] = re.sub(
+        r"^[\s\u200b\ufeff]+|[\s\u200b\ufeff]+$", "", cloud["voice_id"]
+    )
     provider_id = result["behavior"]["tone_provider_id"]
     if (
         len(provider_id) > 200
@@ -338,6 +343,8 @@ def validate_config(value: dict) -> dict:
         "stream",
     }:
         raise BreezeError("官方输出格式或交付方式无效。")
+    if cloud["delivery"] == "stream" and cloud["output_format"] not in STREAM_FORMATS:
+        raise BreezeError("官方流式接收仅支持 pcm、mp3、wav，不支持带后缀的格式。")
     ranges = [
         ("local", "cfg_scale", 0.01, 10),
         ("local", "seed", 0, 2**32 - 1),

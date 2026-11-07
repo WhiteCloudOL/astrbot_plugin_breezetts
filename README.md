@@ -77,6 +77,8 @@ CFG 建议从 `1` 开始，使用声音或语气描述时可尝试 `4`。本地�
 | 交付方式 | 同步、流式接收、后台任务；音频完整接收后进入播放器 |
 | 输出格式 | WAV、MP3、FLAC、PCM、AAC、Opus 及官方采样率 / 码率变体；PCM 自动封装为 WAV |
 
+已有官方音色时，可直接在“连接与设置 → BreezeBlue 官方 API → 音色 ID”中粘贴完整 `voice_id` 并保存，无需先同步目录。插件不要求固定 ID 前缀，会清理复制内容首尾的空格、换行、BOM 和零宽空格，不改写 ID 本身。不要粘贴音色名称、预览 ID、整个网址或额外引号；API Key 须有权访问该音色。缺少密钥、缺少音色和上游 401/403/404 会分别提示；“保存并检查连接”检查服务和模型列表，不等于音色合成权限验收。
+
 ### 创建官方音色
 
 官方模式的音色页集中展示账号目录和音色创建表单：
@@ -129,7 +131,7 @@ LLM 自主语音可用时，模型会获得鼓励主动表达的临时说明；�
 | [火山引擎多情感音色](https://docs.volcengine.com/docs/doubao-voice/tone-list?lang=zh) | 已有 v1 接口的 audio.emotion，须匹配实际音色 |
 | GSVI | 角色模型已安装的 emotion；预设包含“默认”和当前情绪 |
 
-Dashscope 模型或音色的指令能力未被自动识别时，可按官方音色文档手动选择 **Dashscope 音色指令协议**；预置音色的固定情绪会转换为 `你说话的情感是happy。` 这样的严格句式。此选项不能给上游模型增加原本没有的能力。普通 Qwen 模型、旧 ElevenLabs 模型和 Edge TTS 等不支持该控制协议的模型不会自动套用自由指令。
+Dashscope 建议使用自动识别，也可显式选择当前模型与音色已验证的 **Dashscope 音色指令协议**；预置音色的固定情绪会转换为 `你说话的情感是happy。` 这样的严格句式。此选项不能给上游模型增加原本没有的能力。普通 Qwen 模型、旧 ElevenLabs 模型和 Edge TTS 等不支持该控制协议的模型不会自动套用自由指令。
 
 原“平台控制表（可自定义）”折叠区改为 **连接与设置 → 编辑平台控制表** 弹窗，每行填写一个完整原生标签或固定情绪值。Breeze 本地 / BreezeBlue 的表格是 **推荐参考，不是穷举白名单**：LLM 可以自行描述表外表现，使用 `[语气:忍住笑意，轻声试探]`、`[style:restrained excitement]` 或工具 `instruction`，无需先登记。自由表现通过独立的[自然语言指令](https://docs.breezeblue.ai/guides/voice-instruction-prompting)传递，原生音频事件保留在正文中；这些控制均可不添加。
 
@@ -174,6 +176,8 @@ Dashscope 模型或音色的指令能力未被自动识别时，可按官方音�
 | `{user_message}` | 本轮用户消息的引用内容，最多 1000 字符 | 两种提示词 |
 | `{passage}` | 已选出的待朗读台词，作为引用上下文 | 概率自适应 |
 
+概率语音自适应读取 JSON 输出。自定义完整提示词时，请保留 `{output_protocol}`，或手写等价的 JSON 输出规则；仅写语气描述而返回 Markdown、改写台词或新增空白，会触发默认语气回退。可恢复默认模板验证；插件保留用户自定义内容。
+
 变量在使用时替换一次，不会递归解析用户消息或台词中的花括号；普通 JSON 无需转义。不支持的变量会提示错误。建议保留默认模板中的平台规则、语法和输出协议变量。上下文仍通过本轮消息提供，引用内容不作为指令执行。
 
 “应用到草稿”后还需点击工作台“保存配置”才会生效；取消或 Esc 放弃本次弹窗编辑。“恢复默认模板”只修改弹窗内容，应用并保存后生效。留空使用默认模板。提示仅用于当前轮，不写入持久聊天历史；关闭动态语调时不生成控制标记。
@@ -189,6 +193,27 @@ Dashscope 模型或音色的指令能力未被自动识别时，可按官方音�
 插件支持普通发送、AstrBot 默认分段和分段插件。启用聊天语音后，由插件准备完整回复并处理选中的语音片段，文字内容继续按当前分段设置发送。合成失败时，对应片段以文字展示
 
 语音发送使用 AstrBot 的平台适配器，唤醒前缀与命令权限沿用 AstrBot 设置
+
+## 协议限制与验证
+
+官方 HTTP 流式接收只支持裸 `pcm`、`mp3`、`wav`，不接受格式后缀。切换为流式时，工作台将不兼容的格式改为 `wav` 并提示，保存后生效；同步和后台任务保留全部格式选项。后端在配置保存和请求发送前均校验该组合。[官方格式规则](https://docs.breezeblue.ai/concepts/output-format)。旧版已保存的非法流式组合在启动时临时使用 WAV 并记录日志，工作台仍可打开；点击保存前不改写磁盘配置。
+
+CosyVoice 按模型与音色识别指令能力：`v3-plus` 的复刻/设计音色不支持指令；`v3-flash`、`v3.5-plus/flash` 的复刻/设计音色支持自由指令。固定情感仅开放官方音色表中支持相应句式的系统音色：`v3-plus` 的 `longanyang`、`longanhuan`，以及 `v3-flash` 的这两个音色和 `longhuhu_v3`。方言专用音色不会被当作情感音色。显式协议选择必须与识别结果一致，不能绕过校验。[官方能力规则](https://help.aliyun.com/zh/model-studio/realtime-tts-user-guide)、[系统音色表](https://help.aliyun.com/zh/model-studio/cosyvoice-voice-list)
+
+CosyVoice 最终指令（包括整体与分段语气合并后的换行、固定句式）最多 **100 加权字符**，简繁汉字、日文/韩文汉字计 2，其他字符计 1；例如 50 个汉字已达上限。超限在调用上游前报错，LLM 自适应生成的非法控制会回退默认语气。
+
+参考录音可以被记住，但只有当前服务为本地且模式为“参考音色”时才标为“当前”。在普通朗读或声音设计模式下，可直接点击同一录音的“设为当前音色”恢复参考模式。旧预览保存期间生成新预览时，旧保存响应只属于旧预览，不会覆盖新预览或当前音色。
+
+插件提供 Breeze 核心合成、克隆与设计工作流，并复用 AstrBot 部分动态语调提供商；不等于所有供应商 API 全覆盖。HTTP 流式音频完整接收后播放；不包含实时双向 WebSocket、时间戳、Remix/Localize、账号资源管理或官方历史同步。
+
+离线集成使用固定 AstrBot 4.26.0 和 4.29.4 源码，覆盖真实宿主加载/重载、路由、工具、hooks、平台序列化和提供商 SDK；上游响应使用模拟服务，不代表真实付费账号验收。CI 将核心集成缺失或 skip 视为失败，Chromium 检查真实桥接、乱序响应、键盘、视口与音频播放。第三方 splitter 测试需要另行安装该插件，CI 明确排除这些可选案例。
+
+```bash
+# Run from the plugin directory in an environment with AstrBot and its dependencies.
+# Set PYTHONPATH to the fixed AstrBot checkout and BREEZE_BROWSER_TEST=1 first.
+python -m playwright install chromium
+python -m pytest -o asyncio_mode=auto -o asyncio_default_fixture_loop_scope=function --require-integration --ignore=tests/test_live.py -k "not splitter" -q tests
+```
 
 ## 常用设置
 

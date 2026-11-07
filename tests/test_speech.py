@@ -2240,3 +2240,43 @@ async def test_breeze_adaptation_uses_unlisted_free_direction_with_curated_refer
     assert [type(chain[0]) for chain in event.sent] == [Plain, Record]
     prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
     assert "not an exhaustive allowlist" in prompt and "[咳嗽]" in prompt
+
+
+@pytest.mark.parametrize(
+    ("overall", "local", "valid"),
+    [
+        ("轻" * 50, "", True),
+        ("轻" * 51, "", False),
+        ("轻" * 24, "a" * 51, True),
+        ("轻" * 24, "a" * 52, False),
+    ],
+)
+async def test_cosyvoice_adaptive_weighted_limit_falls_back(
+    speech_plugin, event_factory, overall, local, valid
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["backend"] = "provider"
+    plugin.config["behavior"].update(
+        dynamic_tone=True, random_tone_adaptive=True, tone_provider_id="tone-test"
+    )
+    provider = SimpleNamespace(
+        provider_config={"type": "dashscope_tts"},
+        model_name="cosyvoice-v3-flash",
+        voice="cosyvoice-custom",
+    )
+    plugin.context.get_provider_by_id = lambda _: provider
+    marked = (f"[语气:{local}]" if local else "") + "你好。"
+    plugin.context.llm_generate = AsyncMock(
+        return_value=LLMResponse(
+            role="assistant",
+            completion_text=json.dumps({"text": marked, "instruction": overall}),
+        )
+    )
+    result = await plugin.speech.adapt_random_tone(
+        event_factory(), "你好。", plugin.service.settings()
+    )
+    assert result == ((marked, overall) if valid else ("你好。", ""))
+    assert not calls
+    assert (
+        "100 加权字符" in plugin.context.llm_generate.await_args.kwargs["system_prompt"]
+    )

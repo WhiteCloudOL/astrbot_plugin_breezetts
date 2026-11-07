@@ -16,7 +16,9 @@ from .expression import PRESETS, check_directions, expression_profile, provider_
 from .provider_audio import provider_audio
 from .settings import (
     DEFAULTS,
+    FORMATS,
     PROMPT_VARIABLES,
+    STREAM_FORMATS,
     BreezeError,
     validate_config,
     validate_identifier,
@@ -73,6 +75,21 @@ class BreezeService:
             if self.closed:
                 raise BreezeError("插件正在关闭，请稍后重试。")
             if self.store is None:
+                cloud = self.config.get("cloud", {})
+                if (
+                    isinstance(cloud, dict)
+                    and cloud.get("delivery") == "stream"
+                    and isinstance(cloud.get("output_format"), str)
+                    and cloud["output_format"] in FORMATS - STREAM_FORMATS
+                ):
+                    # Older versions allowed this combination; keep the UI accessible.
+                    validate_config(
+                        dict(self.config) | {"cloud": {**cloud, "output_format": "wav"}}
+                    )
+                    self.config["cloud"] = {**cloud, "output_format": "wav"}
+                    self.logger.warning(
+                        "Legacy cloud stream format is unsupported; using WAV in memory until settings are saved."
+                    )
                 self.store = await self.io(AudioStore, self.root)
                 await self.prune_audio(self.settings()["behavior"]["history_limit"])
             await self.client.start()
@@ -184,7 +201,7 @@ class BreezeService:
         async with self.lock:
             assert self.store is not None
             items = sorted(
-                (dict(item) for item in self.store.items.values()),
+                (dict(item) for item in reversed(self.store.items.values())),
                 key=lambda item: item["created"],
                 reverse=True,
             )
@@ -208,11 +225,11 @@ class BreezeService:
                     except BreezeError:
                         preset = {
                             "key": "",
-                            "name": "Dashscope（请选择音色协议）",
+                            "name": "Dashscope（无可用动态语调协议）",
                             "mode": "fixed",
                             "tags": [],
                             "styles": [],
-                            "note": "请按实际模型与音色选择指令协议。",
+                            "note": "当前模型或音色不支持已接入的指令协议，请在 AstrBot 中更换模型或音色。",
                         }
                     tts_providers.append(
                         {
@@ -495,6 +512,7 @@ class BreezeService:
                         join_breeze_audio,
                         [raw for raw, _ in outputs],
                         [part for part, _ in sections],
+                        tags=profile["tags"],
                     ), "wav"
 
             if self.closed:
@@ -828,4 +846,5 @@ class BreezeService:
             or result["voice_id"] in {".", ".."}
         ):
             raise BreezeError("官方保存音色响应无效，请同步目录核对结果。")
+        validate_identifier(result["voice_id"], "官方保存音色响应中的音色 ID")
         return {"voice_id": result["voice_id"]}

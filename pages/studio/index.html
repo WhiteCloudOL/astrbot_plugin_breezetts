@@ -37,7 +37,7 @@
         <div class="sidebar-bottom">
           <span class="status-dot"></span
           ><span id="backend-label">本地 API</span
-          ><small>清蒸云鸭 · v1.5.0<br />AGPL-3.0</small>
+          ><small>清蒸云鸭 · v1.5.1<br />AGPL-3.0</small>
         </div>
       </aside>
       <main id="main-content" tabindex="-1">
@@ -304,7 +304,7 @@
               <div id="provider-settings" hidden>
                 <label for="tts-provider">TTS 提供商</label>
                 <select id="tts-provider" data-config="provider.provider_id"><option value="">请选择已配置的 TTS 提供商</option></select>
-                <small>使用 AstrBot 中已启用的模型、音色和凭据。列表仅显示支持动态语调协议的模型；变更模型后请刷新工作台。</small>
+                <small>使用 AstrBot 中已启用的模型、音色和凭据。列表显示支持动态语调的模型及 Dashscope 配置；不支持指令的模型或音色需在 AstrBot 中更换，修改后请刷新工作台。</small>
               </div>
               <div id="provider-protocol" hidden>
                 <label for="tts-preset">Dashscope 音色指令协议</label>
@@ -312,7 +312,7 @@
                   <option value="">自动识别</option><option value="qwen">Qwen 自由指令</option>
                   <option value="cosyvoice">CosyVoice 复刻/设计音色自由指令</option><option value="cosyvoice_fixed">CosyVoice 预置音色固定情感</option>
                 </select>
-                <small>仅当官方文档明确当前模型与音色支持时手动选择；不会改变上游模型能力。不支持指令的音色请在 AstrBot 中切换。</small>
+                <small>建议自动识别；仅可显式选择当前模型与音色已验证的协议。不支持的协议不可选，手动指定也不能绕过能力校验。</small>
               </div>
               <div id="expression-controls">
                 <p id="expression-policy" class="muted"></p>
@@ -442,7 +442,7 @@
                   id="cloud-voice"
                   data-config="cloud.voice_id"
                   placeholder="从音色库选择，或粘贴已保存的 voice_id"
-                /><label for="cloud-model"
+                /><small>可直接粘贴完整 voice_id 并保存，无需先同步音色库；不限制 ID 前缀。复制时附带的首尾空白会自动清理。请使用有权访问该音色的 API Key。</small><label for="cloud-model"
                   >模型 ID <span class="muted">· 留空自动选择</span></label
                 ><input
                   id="cloud-model"
@@ -529,7 +529,7 @@
                     type="checkbox"
                     role="switch"
                     class="switch" /></label
-                ><small>流式接收完成后统一播放；裸 PCM 自动封装成 WAV</small>
+                ><small>流式仅支持 pcm、mp3、wav；切换时不兼容的格式会改为 wav 并提示。完整接收后统一播放，裸 PCM 自动封装成 WAV。</small>
               </div>
               <div class="form-actions">
                 <button id="test-connection" class="secondary">
@@ -667,6 +667,7 @@
       <h2 id="speech-prompt-title" class="text-h3 pa-4 pb-0 pl-6">编辑语音提示词</h2>
       <div class="dialog-body">
         <p id="speech-prompt-description" class="muted">这里是完整提示词模板，平台规则、标签表和输出格式通过 {变量名} 替换，不会在模板后隐藏追加。标签与语气指令均为推荐使用，可全部省略。</p>
+        <p id="adaptive-output-hint" class="muted" hidden>概率自适应需要返回 JSON。请保留 {output_protocol}，或在完整模板中写明等价的 JSON 输出格式；Markdown、改写台词或额外空白会触发默认语气回退。可只返回 {}，不必添加标签。</p>
         <div class="prompt-editor-layout">
           <div>
             <label for="prompt-editor">完整提示词模板</label>

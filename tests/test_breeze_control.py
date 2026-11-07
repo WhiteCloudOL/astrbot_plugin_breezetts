@@ -172,3 +172,22 @@ def test_complete_prompt_template_replaces_variables_once_without_hidden_suffix(
     assert '"literal {audio_tags}"' in result and '"original {platform_name}"' in result
     assert "Both fields are optional" in result
     assert "{control_syntax}" not in result
+
+
+@pytest.mark.parametrize(
+    ("ending", "milliseconds"), [(".", 300), (",", 150), ("word", 100)]
+)
+def test_custom_provider_events_do_not_hide_boundary_punctuation(ending, milliseconds):
+    source = io.BytesIO()
+    with wave.open(source, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(24000)
+        audio.writeframes(b"\xff\x1f" * 2400)
+    merged = join_breeze_audio(
+        [source.getvalue(), source.getvalue()],
+        ["Hello" + ending + "[custom event]", "Next."],
+        tags=("[custom event]",),
+    )
+    with wave.open(io.BytesIO(merged), "rb") as audio:
+        assert audio.getnframes() == 4800 + 24000 * milliseconds // 1000

@@ -45,7 +45,7 @@ async function action(button, operation) {
   } catch (error) {
     notice(error.message || "操作失败，请稍后重试。", true);
   } finally {
-    button.disabled = button.id === "save" ? !dirty : wasDisabled;
+    button.disabled = button.id === "save" ? settingsSaving || !dirty : wasDisabled;
     button.removeAttribute("aria-busy");
   }
 }
@@ -107,6 +107,10 @@ function updateSummary() {
   $("studio-backend").textContent = backendName;
   $("local-settings").hidden = cloud || hosted;
   $("cloud-settings").hidden = !cloud;
+  for (const option of $("cloud-format").options) {
+    option.hidden = option.disabled = draft.cloud.delivery === "stream" &&
+      !["pcm", "mp3", "wav"].includes(option.value);
+  }
   $("local-voices-panel").hidden = cloud || hosted;
   $("cloud-voices-panel").hidden = !cloud;
   $("voice-page-title").textContent = hosted ? "AstrBot 提供商音色" : cloud
@@ -144,12 +148,13 @@ function updateSummary() {
 }
 
 function fillExpression() {
-  let preset = draft.backend === "provider"
+  const preset = draft.backend === "provider"
     ? state.tts_providers?.find((p) => p.id === draft.provider.provider_id)?.profile
     : state.expression_presets?.[`breeze_${draft.backend}`];
   const dashscope = draft.backend === "provider" && state.tts_providers?.find((p) => p.id === draft.provider.provider_id)?.type === "dashscope_tts";
   $("provider-protocol").hidden = !dashscope;
-  if (dashscope && draft.provider.preset) preset = {...state.expression_presets[draft.provider.preset], key: draft.provider.preset};
+  for (const option of $("tts-preset").options)
+    option.disabled = dashscope && option.value !== "" && option.value !== preset?.key;
   const key = preset?.key || (draft.backend === "provider" ? "" : `breeze_${draft.backend}`);
   $("expression-controls").hidden = !key;
   if (!key) { expressionProfile = undefined; return; }
@@ -200,6 +205,7 @@ async function saveSettings() {
       throw new Error("请检查配置字段的格式和取值范围");
   }
   settingsSaving = true;
+  $("save").disabled = true;
   const snapshot = structuredClone(draft);
   const cleared = [...clearKeys];
   try {
@@ -219,6 +225,7 @@ async function saveSettings() {
     updateSummary();
   } finally {
     settingsSaving = false;
+    $("save").disabled = !dirty;
   }
 }
 
@@ -264,7 +271,8 @@ function renderAudio() {
       "还没有参考录音。点击“上传录音”，为本地复刻或官方克隆准备声音。",
     );
   for (const item of references) {
-    const selected = item.id === draft.local.reference_id;
+    const remembered = item.id === draft.local.reference_id;
+    const selected = remembered && draft.backend === "local" && draft.local.mode === "reference";
     const card = document.createElement("article");
     card.className = `reference-card${selected ? " selected" : ""}`;
     const title = document.createElement("strong");
@@ -320,8 +328,8 @@ function renderAudio() {
       async () => askDelete(item),
       "danger-text",
     );
-    remove.disabled = selected;
-    if (selected) remove.title = "更换当前音色后可删除这条录音";
+    remove.disabled = remembered;
+    if (remembered) remove.title = "更换或清空已记住的参考录音后可删除";
     footer.append(transcript, remove);
     card.append(title, meta, text, select, controls, footer);
     $("references").append(card);
@@ -594,7 +602,20 @@ document.querySelectorAll("[data-config]").forEach((element) =>
     }
     if (parts.length === 1) draft[parts[0]] = value;
     else draft[parts[0]][parts[1]] = value;
+    if (element.id === "tts-provider" && draft.provider.preset &&
+        draft.provider.preset !== state.tts_providers?.find((p) => p.id === value)?.profile.key) {
+      draft.provider.preset = "";
+      $("tts-preset").value = "";
+      notice("已为新提供商恢复自动识别指令协议；保存后生效。");
+    }
+    if (element.id === "cloud-delivery" && value === "stream" &&
+        !["pcm", "mp3", "wav"].includes(draft.cloud.output_format)) {
+      draft.cloud.output_format = "wav";
+      $("cloud-format").value = "wav";
+      notice("流式接收仅支持 pcm、mp3、wav，已将输出格式改为 wav；保存后生效。");
+    }
     markDirty();
+    if (element.id === "backend" || element.id === "local-mode") renderAudio();
   }),
 );
 $("cancel-enable-tone").addEventListener("click", () => $("enable-tone-dialog").close());
@@ -613,6 +634,7 @@ $("enable-tone-dialog").addEventListener("close", () => {
 document.querySelectorAll("[data-edit-prompt]").forEach((button) =>
   button.addEventListener("click", () => {
     editingPrompt = button.dataset.editPrompt;
+    $("adaptive-output-hint").hidden = editingPrompt !== "tone_prompt";
     $("speech-prompt-title").textContent = editingPrompt === "speech_prompt" ? "编辑聊天语音提示词" : "编辑概率语音自适应提示词";
     $("prompt-editor").value = draft.behavior[editingPrompt];
     $("prompt-editor-error").hidden = true;
@@ -919,10 +941,11 @@ $("preview-kind").addEventListener("change", () => {
 $("preview-form").addEventListener("submit", (event) => {
   event.preventDefault();
   action($("create-preview"), async () => {
+    preview = undefined;
+    $("preview-result").hidden = true;
     if (dirty) await saveSettings();
     if (draft.backend !== "cloud")
       throw new Error("请在连接设置中切换并保存官方 API。");
-    $("preview-result").hidden = true;
     notice("正在创建官方音色预览，请稍候。可在最近生成中查看试听音频。");
     preview = await runJob($("preview-kind").value, {
       name: $("preview-name").value,
@@ -938,6 +961,7 @@ $("preview-form").addEventListener("submit", (event) => {
         ? `“${preview.name}”预览已创建，可保存到官方账号；试听音频可在官方控制台查看`
         : `“${preview.name}”预览已生成，请先试听，再保存到官方账号`;
     $("save-preview").hidden = preview.requires_verification;
+    $("save-preview").textContent = "保存并设为当前音色";
     $("play-preview").hidden = !preview.audio;
     $("preview-result").hidden = false;
     await refreshAudio();
@@ -948,19 +972,26 @@ $("play-preview").addEventListener("click", () =>
 );
 $("save-preview").addEventListener("click", () =>
   action($("save-preview"), async () => {
-    if (!preview.saved_voice_id) {
+    const target = preview;
+    if (!target) return;
+    if (!target.saved_voice_id) {
       const saved = await bridge.apiPost("voices/save-preview", {
-        preview_id: preview.preview_id,
-        name: preview.name,
-        language_code: preview.language_code,
+        preview_id: target.preview_id,
+        name: target.name,
+        language_code: target.language_code,
       });
-      preview.saved_voice_id = saved.voice_id;
+      target.saved_voice_id = saved.voice_id;
+      if (preview !== target || draft.backend !== "cloud") {
+        notice("先前预览已保存到官方账号，当前预览和音色选择保持不变。");
+        return;
+      }
       $("preview-message").textContent = `音色已保存 · ${saved.voice_id}`;
       $("save-preview").textContent = "设为当前音色";
     }
-    draft.cloud.voice_id = preview.saved_voice_id;
+    if (preview !== target || draft.backend !== "cloud") return;
+    draft.cloud.voice_id = target.saved_voice_id;
     await saveSettings();
-    $("preview-result").hidden = true;
+    if (preview === target) $("preview-result").hidden = true;
     notice("音色已保存并设为当前官方音色。");
   }),
 );

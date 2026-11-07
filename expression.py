@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import unicodedata
+
 from .breeze_control import AUDIO_TAGS, EVENTS
 from .settings import BreezeError
 
@@ -90,7 +92,7 @@ PRESETS = {
         "mode": "free",
         "tags": [],
         "styles": [],
-        "note": "仅适用于支持指令的模型及复刻/设计音色；最长 128 字符。",
+        "note": "适用于 v3-flash、v3.5-plus/flash 的复刻/设计音色。合并后的指令最多 100 加权字符：汉字计 2，其他字符计 1。",
     },
     "cosyvoice_fixed": {
         "name": "CosyVoice 预置情感",
@@ -122,6 +124,18 @@ PRESETS = {
     },
 }
 
+# Only the emotion protocol is exposed; dialect-only system voices are excluded.
+# Source: https://help.aliyun.com/zh/model-studio/cosyvoice-voice-list
+COSYVOICE_CAPABILITIES = {
+    "cosyvoice-v3-plus": {"custom": "", "system": {"longanyang", "longanhuan"}},
+    "cosyvoice-v3-flash": {
+        "custom": "cosyvoice",
+        "system": {"longanyang", "longanhuan", "longhuhu_v3"},
+    },
+    "cosyvoice-v3.5-plus": {"custom": "cosyvoice", "system": set()},
+    "cosyvoice-v3.5-flash": {"custom": "cosyvoice", "system": set()},
+}
+
 
 def provider_preset(provider) -> str:
     """Identify expressive host models, excluding known unsupported variants.
@@ -150,13 +164,12 @@ def provider_preset(provider) -> str:
         if model.startswith("qwen"):
             return "qwen" if "instruct" in model and "realtime" not in model else ""
         voice = getattr(provider, "voice", "")
-        if model.startswith("cosyvoice-v3"):
-            if voice in {"longanhuan", "longhuhu_v3"}:
+        capability = COSYVOICE_CAPABILITIES.get(model)
+        if capability:
+            if voice.startswith("cosyvoice-"):
+                return capability["custom"]
+            if voice in capability["system"]:
                 return "cosyvoice_fixed"
-            if voice.startswith("cosyvoice-") and (
-                "v3.5" in model or "v3-plus" in model
-            ):
-                return "cosyvoice"
         return ""
     return {
         "minimax_tts_api": "minimax",
@@ -187,10 +200,10 @@ def expression_profile(config: dict, provider=None) -> dict:
         key = provider_preset(provider)
         override = config["provider"]["preset"]
         if override and provider.provider_config.get("type") == "dashscope_tts":
-            model = provider.model_name.lower()
-            if (override == "qwen") != model.startswith("qwen"):
-                raise BreezeError("所选指令协议与 Dashscope 模型不匹配。")
-            key = override
+            if override != key:
+                raise BreezeError(
+                    "所选指令协议不适用于当前 Dashscope 模型和音色，请使用自动识别或更换模型/音色。"
+                )
         if not key:
             raise BreezeError(
                 "当前 TTS 模型没有已验证的动态语调协议，请切换支持的模型。"
@@ -251,14 +264,15 @@ def expression_profile(config: dict, provider=None) -> dict:
 
 
 def check_directions(profile: dict, *directions: str) -> None:
-    """Enforce the selected API's fixed vocabulary before any network request.
+    """Validate styles and final merged instructions before network requests.
 
     Args:
         profile: Effective capability preset.
-        *directions: Overall and local performance directions.
+        *directions: Overall direction followed by each section's local direction.
+            A single direction is already merged, as used by the provider adapter.
 
     Raises:
-        BreezeError: If a fixed API receives unsupported prose or a style value.
+        BreezeError: If a style, markup, or final instruction length is invalid.
     """
     if profile["key"] in {"fish", "elevenlabs", "mimo"} and any(
         any(char in value for char in "[]<>") for value in directions
@@ -268,3 +282,27 @@ def check_directions(profile: dict, *directions: str) -> None:
         value and value not in profile["styles"] for value in directions
     ):
         raise BreezeError("当前平台只接受固定语气值：" + "、".join(profile["styles"]))
+    if profile["key"] in {"cosyvoice", "cosyvoice_fixed"}:
+        effective = directions
+        if profile["mode"] == "free" and len(directions) > 1:
+            effective = tuple(
+                "\n".join(filter(None, (directions[0], local)))
+                for local in directions[1:]
+            )
+        for direction in effective:
+            if profile["key"] == "cosyvoice_fixed" and direction:
+                direction = f"你说话的情感是{direction}。"
+            # Unicode names include unified/compatibility Han and their extensions.
+            weighted_length = sum(
+                2
+                if char == "〇"
+                or unicodedata.name(char, "").startswith(
+                    ("CJK UNIFIED IDEOGRAPH", "CJK COMPATIBILITY IDEOGRAPH")
+                )
+                else 1
+                for char in direction
+            )
+            if weighted_length > 100:
+                raise BreezeError(
+                    "CosyVoice 合并后的指令不能超过 100 加权字符（汉字计 2，其他字符计 1）。"
+                )

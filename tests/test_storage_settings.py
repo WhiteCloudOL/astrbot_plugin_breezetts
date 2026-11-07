@@ -3,10 +3,18 @@
 import copy
 import io
 import json
+import logging
 import wave
 
 import pytest
-from breezetts_test.settings import DEFAULTS, BreezeError, api_root, validate_config
+from breezetts_test.service import BreezeService
+from breezetts_test.settings import (
+    DEFAULTS,
+    FORMATS,
+    BreezeError,
+    api_root,
+    validate_config,
+)
 from breezetts_test.storage import AudioStore, playable_audio
 
 
@@ -237,3 +245,73 @@ def test_prompt_variables_keep_literal_json_and_round_trip(config):
         validate_config(config)["behavior"]["tone_prompt"]
         == config["behavior"]["tone_prompt"]
     )
+
+
+@pytest.mark.parametrize("output_format", sorted(FORMATS))
+@pytest.mark.parametrize("delivery", ["sync", "async", "stream"])
+def test_cloud_delivery_format_combinations(config, output_format, delivery):
+    config["cloud"].update(output_format=output_format, delivery=delivery)
+    if delivery == "stream" and output_format not in {"pcm", "mp3", "wav"}:
+        with pytest.raises(BreezeError, match="流式"):
+            validate_config(config)
+    else:
+        assert validate_config(config)["cloud"]["output_format"] == output_format
+
+
+@pytest.mark.parametrize("output_format", ["flac", "wav_24000"])
+async def test_legacy_stream_settings_can_open_workbench(
+    config, tmp_path, output_format, caplog
+):
+    config["cloud"].update(delivery="stream", output_format=output_format)
+    instance = BreezeService(
+        config, tmp_path / "audio", logging.getLogger("breeze-tests")
+    )
+    try:
+        await instance.start()
+        snapshot = await instance.state()
+        assert snapshot["config"]["cloud"]["output_format"] == "wav"
+        assert snapshot["config"]["cloud"]["delivery"] == "stream"
+        assert "Legacy cloud stream format" in caplog.text
+        assert not hasattr(config, "saved")
+    finally:
+        await instance.close()
+
+
+@pytest.mark.parametrize(
+    "voice_id", ["voc_opaque", "a2b76355-59c5-4ec4-98cf-6c523ce937fb", "legacyVoice42"]
+)
+@pytest.mark.parametrize("padding", [" ", "\r\n", "\u200b", "\ufeff \u200b\t"])
+def test_pasted_voice_id_normalizes_copy_padding(config, voice_id, padding):
+    config["cloud"]["voice_id"] = padding + voice_id + padding
+    validated = validate_config(config)
+    assert validated["cloud"]["voice_id"] == voice_id
+    assert config["cloud"]["voice_id"] == padding + voice_id + padding
+
+
+@pytest.mark.parametrize("reload", [False, True])
+def test_equal_timestamps_keep_newest_written_audio(tmp_path, reload):
+    root = tmp_path / "equal-times"
+    store = AudioStore(root)
+    items = [
+        store.add(b"abcd", "wav", "output", name) for name in ("Old", "Middle", "New")
+    ]
+    for item in store.items.values():
+        item["created"] = 100.0
+    store.persist()
+    if reload:
+        store = AudioStore(root)
+    store.prune(1)
+    assert list(store.items) == [items[-1]["id"]]
+
+
+async def test_workbench_equal_timestamps_show_newest_first(service, wav_audio):
+    items = [
+        service.store.add(wav_audio, "wav", "output", name) for name in ("Old", "New")
+    ]
+    for item in service.store.items.values():
+        item["created"] = 100.0
+    service.store.persist()
+    state = await service.state()
+    assert [item["id"] for item in state["audio"]] == [
+        item["id"] for item in reversed(items)
+    ]
