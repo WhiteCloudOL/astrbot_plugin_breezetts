@@ -1,15 +1,16 @@
 # Changelog
 
-## Unreleased
+## v1.5.1 — 2026-11-07
 
 - Accept manually pasted official voice IDs without catalog synchronization or a required prefix, normalize clipboard padding, and distinguish missing credentials/voice settings from upstream access errors. Cover saved settings, plugin reload, real browser submission and all three delivery modes.
+- Explain the adaptive JSON contract in the prompt dialog and variable metadata while preserving fully editable custom templates.
+- Break equal audio timestamps by persisted insertion order so retention and the workbench keep the newest file, including after reload.
 - Validate saved-preview response identities before selecting them, and use each provider's effective native catalog when preserving sentence pauses between controlled sections.
-
 - Validate official HTTP stream delivery against bare pcm/mp3/wav on both configuration and request paths; filter incompatible UI formats with an explicit draft-change notice.
 - Correct CosyVoice model/voice capability detection and prevent manual protocol overrides from bypassing it. Validate final merged instructions against the 100-character weighted limit, including Han ideographs and fixed wrappers.
 - Bind preview saves to the originating preview, restore Save after edits during any save outcome, and allow remembered references to reactivate from plain/design mode. Navigation is unchanged.
 - Keep legacy invalid stream configurations accessible by using WAV in memory with a warning; leave disk settings unchanged until Save.
-- Add fixed minimum/current AstrBot integration jobs that fail on missing or skipped core coverage, plus real Chromium bridge, out-of-order response, viewport, keyboard and media regressions. Verify 492 cases on each fixed host, 524 with the installed splitter, and 328 standalone Python 3.10 cases; real paid upstream accounts remain outside these offline checks.
+- Add fixed minimum/current AstrBot integration jobs that fail on missing or skipped core coverage, plus real Chromium bridge, out-of-order response, viewport, keyboard and media regressions. Real paid upstream accounts remain outside these offline checks.
 
 ## v1.5.0 — 2026-11-06
 

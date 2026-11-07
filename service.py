@@ -201,7 +201,7 @@ class BreezeService:
         async with self.lock:
             assert self.store is not None
             items = sorted(
-                (dict(item) for item in self.store.items.values()),
+                (dict(item) for item in reversed(self.store.items.values())),
                 key=lambda item: item["created"],
                 reverse=True,
             )

@@ -35,7 +35,7 @@ PROMPT_VARIABLES = {
     },
     "output_protocol": {
         "label": "自适应输出格式",
-        "description": "提供 JSON 格式及台词保留规则；允许不添加标签、留空或省略语气。建议保留。",
+        "description": "提供 JSON 输出及台词保留规则；请保留此变量或手写等价 JSON 契约。格式不符或改写台词会回退；可不加标签、留空或省略语气。",
         "scope": ["tone_prompt"],
     },
     "user_message": {

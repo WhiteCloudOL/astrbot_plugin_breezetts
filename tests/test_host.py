@@ -807,6 +807,9 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
                 await frame.locator("#prompt-editor").fill(template)
                 if name == "tone_prompt":
                     await expect(
+                        frame.locator("#adaptive-output-hint")
+                    ).to_contain_text("需要返回 JSON")
+                    await expect(
                         frame.locator('[data-insert-variable="output_protocol"]')
                     ).to_be_visible()
                     await expect(

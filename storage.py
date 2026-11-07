@@ -300,7 +300,12 @@ class AudioStore:
             max_bytes: Maximum total size of generated files, excluding references.
         """
         generated = sorted(
-            (item for item in self.items.values() if item["kind"] != "reference"),
+            # Stable sorting keeps the most recently inserted item on timestamp ties.
+            (
+                item
+                for item in reversed(self.items.values())
+                if item["kind"] != "reference"
+            ),
             key=lambda item: item["created"],
             reverse=True,
         )

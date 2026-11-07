@@ -37,7 +37,7 @@
         <div class="sidebar-bottom">
           <span class="status-dot"></span
           ><span id="backend-label">本地 API</span
-          ><small>清蒸云鸭 · v1.5.0<br />AGPL-3.0</small>
+          ><small>清蒸云鸭 · v1.5.1<br />AGPL-3.0</small>
         </div>
       </aside>
       <main id="main-content" tabindex="-1">
@@ -667,6 +667,7 @@
       <h2 id="speech-prompt-title" class="text-h3 pa-4 pb-0 pl-6">编辑语音提示词</h2>
       <div class="dialog-body">
         <p id="speech-prompt-description" class="muted">这里是完整提示词模板，平台规则、标签表和输出格式通过 {变量名} 替换，不会在模板后隐藏追加。标签与语气指令均为推荐使用，可全部省略。</p>
+        <p id="adaptive-output-hint" class="muted" hidden>概率自适应需要返回 JSON。请保留 {output_protocol}，或在完整模板中写明等价的 JSON 输出格式；Markdown、改写台词或额外空白会触发默认语气回退。可只返回 {}，不必添加标签。</p>
         <div class="prompt-editor-layout">
           <div>
             <label for="prompt-editor">完整提示词模板</label>

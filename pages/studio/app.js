@@ -634,6 +634,7 @@ $("enable-tone-dialog").addEventListener("close", () => {
 document.querySelectorAll("[data-edit-prompt]").forEach((button) =>
   button.addEventListener("click", () => {
     editingPrompt = button.dataset.editPrompt;
+    $("adaptive-output-hint").hidden = editingPrompt !== "tone_prompt";
     $("speech-prompt-title").textContent = editingPrompt === "speech_prompt" ? "编辑聊天语音提示词" : "编辑概率语音自适应提示词";
     $("prompt-editor").value = draft.behavior[editingPrompt];
     $("prompt-editor-error").hidden = true;

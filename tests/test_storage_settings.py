@@ -286,3 +286,32 @@ def test_pasted_voice_id_normalizes_copy_padding(config, voice_id, padding):
     validated = validate_config(config)
     assert validated["cloud"]["voice_id"] == voice_id
     assert config["cloud"]["voice_id"] == padding + voice_id + padding
+
+
+@pytest.mark.parametrize("reload", [False, True])
+def test_equal_timestamps_keep_newest_written_audio(tmp_path, reload):
+    root = tmp_path / "equal-times"
+    store = AudioStore(root)
+    items = [
+        store.add(b"abcd", "wav", "output", name) for name in ("Old", "Middle", "New")
+    ]
+    for item in store.items.values():
+        item["created"] = 100.0
+    store.persist()
+    if reload:
+        store = AudioStore(root)
+    store.prune(1)
+    assert list(store.items) == [items[-1]["id"]]
+
+
+async def test_workbench_equal_timestamps_show_newest_first(service, wav_audio):
+    items = [
+        service.store.add(wav_audio, "wav", "output", name) for name in ("Old", "New")
+    ]
+    for item in service.store.items.values():
+        item["created"] = 100.0
+    service.store.persist()
+    state = await service.state()
+    assert [item["id"] for item in state["audio"]] == [
+        item["id"] for item in reversed(items)
+    ]
