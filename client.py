@@ -83,8 +83,8 @@ class BreezeClient:
                     messages = {
                         401: "鉴权失败，请检查 API Key；本地无鉴权服务可留空。",
                         402: "官方账户余额或 API Key 额度不足，请在官方控制台检查。",
-                        403: "当前账号无权访问此音色或操作。",
-                        404: "接口或音色不存在，请检查服务类型、服务地址和音色 ID。",
+                        403: "当前 API Key 无权访问此音色或操作，请核对密钥所属账号及音色授权。",
+                        404: "接口或音色不存在，请核对服务地址、完整音色 ID，以及 API Key 所属账号是否可访问该音色。",
                         409: "服务繁忙或操作冲突，请稍后重试。",
                         422: "服务拒绝了请求参数，请检查模型、语言、参考录音和文字稿。",
                         429: "服务队列或并发额度已满，请稍后重试。",
@@ -182,8 +182,13 @@ class BreezeClient:
             and connection["output_format"] not in STREAM_FORMATS
         ):
             raise BreezeError("官方流式接收仅支持 pcm、mp3、wav，不支持带后缀的格式。")
-        if not connection["api_key"] or not connection["voice_id"]:
-            raise BreezeError("请填写官方 API Key，并在音色库选择音色或填写音色 ID。")
+        if not connection["api_key"]:
+            raise BreezeError("请在连接设置中填写并保存 BreezeBlue 官方 API Key。")
+        if not connection["voice_id"]:
+            raise BreezeError(
+                "尚未设置官方音色 ID。请在连接设置的“音色 ID”中粘贴并保存，或从音色库选择；无需先同步目录。"
+            )
+        voice_id = validate_identifier(connection["voice_id"], "音色 ID")
         body = {
             "text": text,
             "voice_settings": {
@@ -196,7 +201,7 @@ class BreezeClient:
         for key in ("model_id", "language_code", "instructions"):
             if connection[key]:
                 body[key] = connection[key]
-        path = "text-to-speech/" + quote(connection["voice_id"], safe="")
+        path = "text-to-speech/" + quote(voice_id, safe="")
         params = {"output_format": connection["output_format"]}
         if connection["delivery"] == "stream":
             path += "/stream"

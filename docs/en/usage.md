@@ -24,6 +24,8 @@ Upload a recording, enter its exact transcript, and select it as the current voi
 
 Select BreezeBlue official API and enter `https://api.breeze.blue/v1` and your developer key. Save and check the connection, then browse personal or public voices and choose one
 
+For an existing voice, paste the complete `voice_id` in Connection & Settings and save; catalog synchronization is not required. Prefixes and UUIDs are passed through unchanged. Clipboard whitespace, BOM and zero-width padding are removed only at the edges. Do not paste a name, preview ID, URL or extra quotes. For upstream 403/404 errors, check the ID and the API key account’s access. A connection check does not verify permission to synthesize that voice.
+
 Clone creation has its own reference-upload control. Enter a voice name and language, generate a preview, audition it, and save it to your account. Voice design accepts a voice description and preview script
 
 ## Controls and playback

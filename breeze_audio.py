@@ -10,12 +10,15 @@ from .settings import BreezeError
 from .storage import AUDIO_LIMIT
 
 
-def join_breeze_audio(audio: list[bytes], texts: list[str]) -> bytes:
+def join_breeze_audio(
+    audio: list[bytes], texts: list[str], *, tags: tuple[str, ...] | None = None
+) -> bytes:
     """Join matching WAV sections and preserve natural pauses between directions.
 
     Args:
         audio: Complete PCM WAV sections from one synthesis request.
         texts: Matching sections used to determine punctuation and explicit pauses.
+        tags: Selected provider's native controls, or Breeze defaults when omitted.
 
     Returns:
         A single WAV file, with existing quiet edges counted toward each pause.
@@ -96,7 +99,7 @@ def join_breeze_audio(audio: list[bytes], texts: list[str]) -> bytes:
                 silence = b""
                 if index:
                     left, right = texts[index - 1].rstrip(), texts[index].lstrip()
-                    ending = clean_breeze_text(left).rstrip(
+                    ending = clean_breeze_text(left, tags).rstrip(
                         " \t\r\n\"'”’»」』】）》）)]"
                     )
                     milliseconds = (

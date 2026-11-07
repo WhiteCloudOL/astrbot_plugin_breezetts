@@ -375,3 +375,98 @@ async def test_cloud_stream_rejects_invalid_formats_before_transport(
         with pytest.raises(BreezeError, match="流式"):
             await client.synthesize(config, "Hello.")
         client.request.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "voice_id",
+    [
+        "voc_opaque",
+        "a2b76355-59c5-4ec4-98cf-6c523ce937fb",
+        "legacyVoice42",
+        "opaque.id+value",
+    ],
+)
+@pytest.mark.parametrize("delivery", ["sync", "stream", "async"])
+async def test_manually_saved_voice_is_sent_without_catalog_lookup(
+    service, config, server, wav_audio, voice_id, delivery
+):
+    calls = []
+
+    async def upstream(request):
+        calls.append((request.method, request.path))
+        if request.method == "POST":
+            assert request.path == "/v1/text-to-speech/" + voice_id + (
+                "/stream" if delivery == "stream" else ""
+            )
+            assert request.headers["Authorization"] == "Bearer manual-test-key"
+            assert (await request.json())["text"] == "手动音色测试。"
+            if delivery == "async":
+                return web.json_response(
+                    {"generation_job_id": "job_manual"}, status=202
+                )
+        elif request.path == "/v1/generation-jobs/job_manual":
+            return web.json_response(
+                {"generation_job_id": "job_manual", "status": "ready"}
+            )
+        else:
+            assert request.path == "/v1/generation-jobs/job_manual/audio"
+        return web.Response(body=wav_audio, content_type="audio/wav")
+
+    draft = (await service.state())["config"]
+    draft["backend"] = "cloud"
+    draft["cloud"].update(
+        base_url=await server(upstream),
+        api_key="manual-test-key",
+        voice_id="\ufeff  " + voice_id + "\u200b ",
+        delivery=delivery,
+    )
+    saved = await service.save_settings(draft, [])
+    assert saved["config"]["cloud"]["voice_id"] == voice_id
+    assert config.saved["cloud"]["voice_id"] == voice_id
+    assert not calls
+    audio = await service.synthesize("手动音色测试。")
+    assert service.store.path(audio["id"]).read_bytes() == wav_audio
+    assert len(calls) == (3 if delivery == "async" else 1)
+
+
+@pytest.mark.parametrize(
+    ("key", "voice", "message"), [("", "voice", "API Key"), ("test", "", "音色 ID")]
+)
+async def test_cloud_missing_settings_have_specific_errors(config, key, voice, message):
+    config["backend"] = "cloud"
+    config["cloud"].update(api_key=key, voice_id=voice)
+    client = BreezeClient()
+    client.request = AsyncMock()
+    with pytest.raises(BreezeError, match=message):
+        await client.synthesize(config, "Hello.")
+    client.request.assert_not_awaited()
+
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+async def test_manual_voice_upstream_errors_preserve_status_and_hide_secrets(
+    config, server, status
+):
+    calls = []
+
+    async def upstream(request):
+        calls.append(request.path)
+        return web.Response(status=status, text="private-key upstream-details")
+
+    config["backend"] = "cloud"
+    config["cloud"].update(
+        base_url=await server(upstream),
+        api_key="private-key",
+        voice_id="manually-pasted-voice",
+    )
+    client = BreezeClient()
+    try:
+        with pytest.raises(BreezeError) as failure:
+            await client.synthesize(config, "Hello.")
+        assert failure.value.code == f"upstream_http_{status}"
+        assert f"HTTP {status}" in str(failure.value)
+        assert "private-key" not in str(
+            failure.value
+        ) and "upstream-details" not in str(failure.value)
+        assert calls == ["/v1/text-to-speech/manually-pasted-voice"]
+    finally:
+        await client.close()

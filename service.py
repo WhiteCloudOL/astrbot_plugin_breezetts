@@ -512,6 +512,7 @@ class BreezeService:
                         join_breeze_audio,
                         [raw for raw, _ in outputs],
                         [part for part, _ in sections],
+                        tags=profile["tags"],
                     ), "wav"
 
             if self.closed:
@@ -845,4 +846,5 @@ class BreezeService:
             or result["voice_id"] in {".", ".."}
         ):
             raise BreezeError("官方保存音色响应无效，请同步目录核对结果。")
+        validate_identifier(result["voice_id"], "官方保存音色响应中的音色 ID")
         return {"voice_id": result["voice_id"]}

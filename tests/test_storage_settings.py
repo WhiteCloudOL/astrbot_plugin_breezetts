@@ -275,3 +275,14 @@ async def test_legacy_stream_settings_can_open_workbench(
         assert not hasattr(config, "saved")
     finally:
         await instance.close()
+
+
+@pytest.mark.parametrize(
+    "voice_id", ["voc_opaque", "a2b76355-59c5-4ec4-98cf-6c523ce937fb", "legacyVoice42"]
+)
+@pytest.mark.parametrize("padding", [" ", "\r\n", "\u200b", "\ufeff \u200b\t"])
+def test_pasted_voice_id_normalizes_copy_padding(config, voice_id, padding):
+    config["cloud"]["voice_id"] = padding + voice_id + padding
+    validated = validate_config(config)
+    assert validated["cloud"]["voice_id"] == voice_id
+    assert config["cloud"]["voice_id"] == padding + voice_id + padding

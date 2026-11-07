@@ -609,3 +609,22 @@ def test_cosyvoice_fixed_wrapper_counts_toward_limit(size, valid):
     else:
         with pytest.raises(BreezeError, match="100"):
             check_directions(profile, style)
+
+
+async def test_provider_section_pauses_use_effective_native_catalog(
+    service, config, tmp_path
+):
+    path = tmp_path / "loud.wav"
+    with wave.open(str(path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(24000)
+        audio.writeframes(b"\xff\x1f" * 2400)
+    provider = FileProvider("fishaudio_tts_api", "s2-pro", path)
+    service.context = SimpleNamespace(get_provider_by_id=lambda _: provider)
+    config["backend"] = "provider"
+    config["behavior"]["dynamic_tone"] = True
+    config["expression"]["fish_tags"] = "[custom event]"
+    result = await service.synthesize("[语气:warm]Hello.[custom event][语气:calm]Next.")
+    with wave.open(str(service.store.path(result["id"])), "rb") as audio:
+        assert audio.getnframes() == 4800 + 7200

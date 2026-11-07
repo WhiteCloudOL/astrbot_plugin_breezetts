@@ -412,11 +412,14 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
     root = page_service.get_plugin_root_dir(metadata) / "pages" / "studio"
     saved_previews = []
     created_previews = []
+    manual_tts_calls = []
+    voice_catalog_calls = []
 
     async def upstream(request):
         if request.path.endswith("/models"):
             return web.json_response([{"model_id": "breeze-tts-2"}])
         if request.path.endswith("/voices"):
+            voice_catalog_calls.append(dict(request.query))
             second = request.query.get("next_page_token") == "next"
             return web.json_response(
                 {
@@ -448,6 +451,9 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
                     else f"voc_ui_saved_{len(saved_previews)}"
                 }
             )
+        if "/text-to-speech/" in request.path:
+            manual_tts_calls.append((request.path, await request.json()))
+            return web.Response(body=wav_audio, content_type="audio/wav")
         if request.path.endswith("/stream"):
             return web.Response(body=wav_audio, content_type="audio/wav")
         if request.path.endswith("/health"):
@@ -934,6 +940,25 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await frame.locator("#backend").select_option("cloud")
             await frame.locator("#cloud-url").fill(base_url)
             await frame.locator("#cloud-key").fill("browser-test-key")
+            manual_voice = "a2b76355-59c5-4ec4-98cf-6c523ce937fb"
+            await frame.locator("#cloud-voice").fill(
+                "\ufeff \u200b" + manual_voice + " "
+            )
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            await expect(frame.locator("#cloud-voice")).to_have_value(manual_voice)
+            await page.reload()
+            await expect(frame.locator("#cloud-voice")).to_have_value(manual_voice)
+            await frame.get_by_role("button", name="合成试听", exact=True).click()
+            await frame.locator("#synthesis-text").fill("手动音色测试。")
+            await frame.locator("#synthesize").click()
+            await expect(frame.locator("#player-state")).to_have_text(
+                "4.0 秒", timeout=15000
+            )
+            assert plugin.config["cloud"]["voice_id"] == manual_voice
+            assert manual_tts_calls[0][0] == "/v1/text-to-speech/" + manual_voice
+            assert not voice_catalog_calls
+            await frame.get_by_role("button", name="连接与设置").click()
             for output_format in ("flac", "wav_24000"):
                 await frame.locator("#cloud-format").select_option(output_format)
                 await frame.locator("#cloud-delivery").select_option("stream")
@@ -1199,3 +1224,34 @@ async def test_reload_legacy_stream_format_keeps_workbench_accessible(loaded_plu
         json.loads(path.read_text(encoding="utf-8-sig"))["cloud"]["output_format"]
         == "flac"
     )
+
+
+async def test_manual_voice_id_survives_actual_plugin_reload(
+    loaded_plugin, server, wav_audio
+):
+    from aiohttp import web
+
+    manager, context, metadata = loaded_plugin
+    plugin = metadata.star_cls
+    voice_id = "a2b76355-59c5-4ec4-98cf-6c523ce937fb"
+    calls = []
+
+    async def upstream(request):
+        calls.append(request.path)
+        assert request.path == "/v1/text-to-speech/" + voice_id
+        return web.Response(body=wav_audio, content_type="audio/wav")
+
+    draft = (await plugin.service.state())["config"]
+    draft["backend"] = "cloud"
+    draft["cloud"].update(
+        base_url=await server(upstream),
+        api_key="manual-test-key",
+        voice_id=" \ufeff" + voice_id + "\u200b ",
+    )
+    await plugin.service.save_settings(draft, [])
+    ok, error = await manager.reload(metadata.name)
+    assert ok, error
+    current = context.get_registered_star(metadata.name).star_cls
+    assert current.service.settings()["cloud"]["voice_id"] == voice_id
+    await current.service.synthesize("测试。")
+    assert calls == ["/v1/text-to-speech/" + voice_id]

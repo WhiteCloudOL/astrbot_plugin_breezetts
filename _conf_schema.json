@@ -92,7 +92,7 @@
       "voice_id": {
         "type": "string",
         "description": "官方音色 ID",
-        "hint": "在工作台同步并选择官方音色，也可手动填写。",
+        "hint": "可直接粘贴完整 voice_id 并保存，无需先同步目录，不限制前缀；首尾空白自动清理。请使用有权访问该音色的 API Key。",
         "default": ""
       },
       "model_id": {

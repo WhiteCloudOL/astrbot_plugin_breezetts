@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Accept manually pasted official voice IDs without catalog synchronization or a required prefix, normalize clipboard padding, and distinguish missing credentials/voice settings from upstream access errors. Cover saved settings, plugin reload, real browser submission and all three delivery modes.
+- Validate saved-preview response identities before selecting them, and use each provider's effective native catalog when preserving sentence pauses between controlled sections.
+
 - Validate official HTTP stream delivery against bare pcm/mp3/wav on both configuration and request paths; filter incompatible UI formats with an explicit draft-change notice.
 - Correct CosyVoice model/voice capability detection and prevent manual protocol overrides from bypassing it. Validate final merged instructions against the 100-character weighted limit, including Han ideographs and fixed wrappers.
 - Bind preview saves to the originating preview, restore Save after edits during any save outcome, and allow remembered references to reactivate from plain/design mode. Navigation is unchanged.

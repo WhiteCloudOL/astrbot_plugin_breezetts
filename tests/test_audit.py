@@ -284,3 +284,18 @@ async def test_design_preview_identity_survives_invalid_audio(
         service.settings(),
     )
     assert result["preview_id"] == "preview_design_paid" and result["audio_unavailable"]
+
+
+@pytest.mark.parametrize("voice_id", [" voice", "voice\nsecret", "voice\x7f", ".."])
+async def test_saved_preview_rejects_malformed_voice_identity(
+    service, config, server, voice_id
+):
+    async def upstream(request):
+        assert request.path == "/v1/voice-previews/preview_paid/save"
+        return web.json_response({"voice_id": voice_id})
+
+    config["cloud"].update(base_url=await server(upstream), api_key="test-key")
+    with pytest.raises(BreezeError):
+        await service.save_preview(
+            {"preview_id": "preview_paid", "name": "Voice", "language_code": "zh"}
+        )

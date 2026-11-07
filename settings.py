@@ -308,6 +308,10 @@ def validate_config(value: dict) -> dict:
             elif not 1 <= len(line) <= 100 or any(c in line for c in "[]<>()`"):
                 raise BreezeError("每行填写一个平台实际支持的情绪值，不能包含标记。")
     local, cloud = result["local"], result["cloud"]
+    # Clipboard padding is not part of the opaque ID; never infer a required prefix.
+    cloud["voice_id"] = re.sub(
+        r"^[\s\u200b\ufeff]+|[\s\u200b\ufeff]+$", "", cloud["voice_id"]
+    )
     provider_id = result["behavior"]["tone_provider_id"]
     if (
         len(provider_id) > 200
