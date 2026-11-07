@@ -19,6 +19,8 @@ HOST_ROOT = tempfile.TemporaryDirectory(
     prefix="breezetts-host-tests-", ignore_cleanup_errors=True
 )
 os.environ["ASTRBOT_ROOT"] = HOST_ROOT.name
+# Host telemetry must not outlive the isolated test event loops.
+os.environ["ASTRBOT_DISABLE_METRICS"] = "1"
 spec = importlib.util.spec_from_file_location(
     "breezetts_test", ROOT / "__init__.py", submodule_search_locations=[str(ROOT)]
 )
