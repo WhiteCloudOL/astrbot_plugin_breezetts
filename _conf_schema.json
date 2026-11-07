@@ -302,7 +302,7 @@
           "cosyvoice_fixed"
         ],
         "default": "",
-        "hint": "通常留空自动识别。模型或音色支持指令但未自动识别时，按官方规范选择 qwen 自由指令、cosyvoice 复刻音色自由指令或 cosyvoice_fixed 固定情感。"
+        "hint": "建议留空自动识别；显式选择须与当前模型和音色已验证的协议一致，不能绕过能力校验。CosyVoice v3-plus 自定义音色不支持指令；v3-flash、v3.5-plus/flash 自定义音色支持自由指令，合并后最多 100 加权字符（汉字计 2，其他计 1）。"
       }
     }
   },

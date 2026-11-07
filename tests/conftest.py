@@ -30,6 +30,33 @@ from breezetts_test.service import BreezeService  # noqa: E402
 from breezetts_test.settings import DEFAULTS  # noqa: E402
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--require-integration",
+        action="store_true",
+        help="Require host, provider wire and speech coverage with no skipped tests",
+    )
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Fail the integration lane when its required coverage was skipped.
+
+    Args:
+        session: Finished pytest session containing the collected test items.
+        exitstatus: Pytest's original exit status before coverage enforcement.
+    """
+    if not session.config.getoption("--require-integration"):
+        return
+    required = {"test_host.py", "test_provider_wire.py", "test_speech.py"}
+    collected = {Path(item.path).name for item in session.items}
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if required - collected or reporter.stats.get("skipped"):
+        reporter.write_sep(
+            "=", "Required integration coverage is missing or skipped", red=True
+        )
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
 def pytest_unconfigure(config):
     HOST_ROOT.cleanup()
 

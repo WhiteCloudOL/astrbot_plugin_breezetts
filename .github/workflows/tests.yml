@@ -28,3 +28,44 @@ jobs:
           node-version: "22"
       - run: node --input-type=module --check < pages/studio/app.js
         shell: bash
+
+  integration:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        host:
+          - name: "4.26.0"
+            commit: "952d1bfad7e516df5c5dd4f9e7414b81cb4e5bde"
+          - name: "4.29.4"
+            commit: "86c24e846c0de78830f6a0bc402049edb0f0c671"
+    name: integration (${{ matrix.os }}, AstrBot ${{ matrix.host.name }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: astrbot_plugin_breezetts
+    env:
+      PYTHONPATH: ${{ github.workspace }}/astrbot
+      BREEZE_BROWSER_TEST: "1"
+      BREEZE_SCREENSHOT_DIR: ${{ runner.temp }}/breeze-screenshots
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: astrbot_plugin_breezetts
+      - uses: actions/checkout@v4
+        with:
+          repository: AstrBotDevs/AstrBot
+          ref: ${{ matrix.host.commit }}
+          path: astrbot
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ../astrbot -r requirements.txt "pytest>=8,<10" "pytest-asyncio>=0.24,<2" playwright
+      - run: python -m playwright install --with-deps chromium
+      # Third-party splitter checks remain opt-in; all core integration skips fail.
+      - run: python -m pytest -o asyncio_mode=auto -o asyncio_default_fixture_loop_scope=function --require-integration --ignore=tests/test_live.py -k "not splitter" -q tests
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-${{ matrix.os }}-${{ matrix.host.name }}
+          path: ${{ runner.temp }}/breeze-screenshots

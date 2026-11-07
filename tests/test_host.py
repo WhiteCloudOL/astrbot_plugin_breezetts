@@ -411,6 +411,7 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
     page_service = PluginPageService(manager)
     root = page_service.get_plugin_root_dir(metadata) / "pages" / "studio"
     saved_previews = []
+    created_previews = []
 
     async def upstream(request):
         if request.path.endswith("/models"):
@@ -431,12 +432,22 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
                 }
             )
         if request.path.endswith("/clone"):
+            created_previews.append(len(created_previews) + 1)
             return web.json_response(
-                {"generated_voice_id": "preview_ui", "requires_verification": False}
+                {
+                    "generated_voice_id": f"preview_ui_{len(created_previews)}",
+                    "requires_verification": False,
+                }
             )
         if request.path.endswith("/save"):
             saved_previews.append(await request.json())
-            return web.json_response({"voice_id": "voc_ui_saved"})
+            return web.json_response(
+                {
+                    "voice_id": "voc_ui_saved"
+                    if "/preview_ui_1/" in request.path
+                    else f"voc_ui_saved_{len(saved_previews)}"
+                }
+            )
         if request.path.endswith("/stream"):
             return web.Response(body=wav_audio, content_type="audio/wav")
         if request.path.endswith("/health"):
@@ -453,7 +464,19 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
         model_name="speech-2.8-hd",
         meta=lambda: SimpleNamespace(id="expressive-voice"),
     )
-    plugin.context.get_all_tts_providers = lambda: [ui_tts]
+    ui_cosy = SimpleNamespace(
+        provider_config={"type": "dashscope_tts", "id": "cosy-free"},
+        model_name="cosyvoice-v3-flash",
+        voice="cosyvoice-custom",
+        meta=lambda: SimpleNamespace(id="cosy-free"),
+    )
+    ui_unsupported = SimpleNamespace(
+        provider_config={"type": "dashscope_tts", "id": "cosy-unsupported"},
+        model_name="cosyvoice-v3-plus",
+        voice="cosyvoice-custom",
+        meta=lambda: SimpleNamespace(id="cosy-unsupported"),
+    )
+    plugin.context.get_all_tts_providers = lambda: [ui_tts, ui_cosy, ui_unsupported]
     plugin.context.get_provider_by_id = lambda provider_id: (
         ui_tts if provider_id == "expressive-voice" else None
     )
@@ -553,6 +576,33 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await expect(frame.locator("#cloud-voices-panel")).to_be_hidden()
             await frame.get_by_role("button", name="设为当前音色").click()
             await expect(frame.get_by_role("button", name="当前音色 ✓")).to_be_visible()
+            # A remembered reference becomes active only in local/reference mode.
+            for mode in ("plain", "design"):
+                await frame.get_by_role("button", name="连接与设置").click()
+                await frame.locator("#local-mode").select_option(mode)
+                if mode == "design":
+                    await frame.locator('[data-config="local.instruction"]').fill(
+                        "清晰的女声"
+                    )
+                await frame.locator("#save").click()
+                await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+                await frame.get_by_role("button", name="音色与录音").click()
+                await expect(
+                    frame.get_by_role("button", name="当前音色 ✓")
+                ).to_have_count(0)
+                await expect(
+                    frame.get_by_role("button", name="设为当前音色")
+                ).to_be_enabled()
+                await frame.get_by_role("button", name="设为当前音色").click()
+                await expect(
+                    frame.get_by_role("button", name="当前音色 ✓")
+                ).to_be_visible()
+                assert plugin.config["backend"] == "local"
+                assert plugin.config["local"]["mode"] == "reference"
+            await frame.get_by_role("button", name="连接与设置").click()
+            await frame.locator('[data-config="local.instruction"]').fill("")
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
             await frame.get_by_role("button", name="合成试听", exact=True).click()
             await frame.locator("#synthesis-text").fill("🎧")
             await expect(frame.locator("#text-count")).to_have_text("1 / 1000")
@@ -599,6 +649,11 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await page.unroute("**/audio/chunk**", fail_audio)
             await frame.locator("#retry-playback").click()
             await expect(frame.locator("#player-state")).to_have_text("16.0 秒")
+            await expect(frame.locator("#player")).to_have_js_property("paused", False)
+            await expect(frame.locator("#player")).to_have_js_property("error", None)
+            assert await frame.locator("#player").evaluate(
+                "audio => audio.readyState >= 2"
+            )
             async with page.expect_download() as download_info:
                 await frame.locator("#download-current").click()
             downloaded = await download_info.value
@@ -811,6 +866,24 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             assert plugin.config["expression"]["breeze_local_tags"] == "[咳嗽]"
             await frame.locator("#apply-expression").click()
             await frame.locator("#backend").select_option("provider")
+            await frame.locator("#tts-provider").select_option("cosy-free")
+            await expect(frame.locator("#expression-policy")).to_contain_text(
+                "100 加权字符"
+            )
+            await frame.locator("#tts-preset").select_option("cosyvoice")
+            await expect(
+                frame.locator('#tts-preset option[value="cosyvoice"]')
+            ).to_be_enabled()
+            await expect(
+                frame.locator('#tts-preset option[value="cosyvoice_fixed"]')
+            ).to_be_disabled()
+            await frame.locator("#tts-provider").select_option("cosy-unsupported")
+            await expect(frame.locator("#tts-preset")).to_have_value("")
+            await expect(frame.locator("#notice")).to_contain_text("恢复自动识别")
+            await expect(frame.locator("#expression-controls")).to_be_hidden()
+            await expect(
+                frame.locator('#tts-preset option[value="cosyvoice"]')
+            ).to_be_disabled()
             await frame.locator("#tts-provider").select_option("expressive-voice")
             await expect(frame.locator("#local-settings")).to_be_hidden()
             await expect(frame.locator("#expression-policy")).to_contain_text(
@@ -861,6 +934,25 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await frame.locator("#backend").select_option("cloud")
             await frame.locator("#cloud-url").fill(base_url)
             await frame.locator("#cloud-key").fill("browser-test-key")
+            for output_format in ("flac", "wav_24000"):
+                await frame.locator("#cloud-format").select_option(output_format)
+                await frame.locator("#cloud-delivery").select_option("stream")
+                await expect(frame.locator("#cloud-format")).to_have_value("wav")
+                await expect(
+                    frame.locator("#cloud-format option:not([hidden])")
+                ).to_have_count(3)
+                await expect(frame.locator("#notice")).to_contain_text(
+                    "已将输出格式改为 wav"
+                )
+                for allowed in ("pcm", "mp3", "wav"):
+                    await frame.locator("#cloud-format").select_option(allowed)
+                await frame.locator("#cloud-delivery").select_option("sync")
+                await expect(
+                    frame.locator("#cloud-format option:not([hidden])")
+                ).to_have_count(14)
+            await frame.locator("#cloud-delivery").select_option("stream")
+            await capture_view("settings-cloud-formats.png")
+            await frame.locator("#cloud-delivery").select_option("sync")
             await frame.locator("#test-connection").click()
             await expect(frame.locator("#connection-result")).to_have_text("连接成功")
             await expect(frame.locator("#cloud-key")).to_have_value("")
@@ -917,21 +1009,50 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
                 "placeholder", "已配置密钥；留空保留，输入新值替换"
             )
 
-            async def delayed_settings(route):
-                await asyncio.sleep(0.35)
-                await route.continue_()
+            # Explicit barriers cover edits during direct/indirect saves, both outcomes.
+            for index, (trigger, success) in enumerate(
+                [
+                    ("save", True),
+                    ("save", False),
+                    ("test-connection", True),
+                    ("test-connection", False),
+                ]
+            ):
+                save_started = asyncio.Event()
+                release_save = asyncio.Event()
 
-            await page.route("**/settings", delayed_settings)
-            await frame.locator("#max-characters").fill("1001")
-            await frame.locator("#save").click()
-            await frame.locator("#timeout").fill("700")
-            await expect(frame.locator("#save")).to_be_enabled()
-            await expect(frame.locator("#timeout")).to_have_value("700")
-            assert plugin.config["behavior"]["timeout"] == 600
-            await page.unroute("**/settings", delayed_settings)
-            await frame.locator("#save").click()
-            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
-            assert plugin.config["behavior"]["timeout"] == 700
+                async def delayed_settings(route):
+                    save_started.set()
+                    await release_save.wait()
+                    if success:
+                        await route.continue_()
+                    else:
+                        await route.fulfill(
+                            status=500,
+                            json={
+                                "status": "error",
+                                "message": "Temporary save failure",
+                            },
+                        )
+
+                await page.route("**/settings", delayed_settings)
+                await frame.locator("#max-characters").fill(str(1100 + index))
+                await frame.locator(f"#{trigger}").click()
+                await asyncio.wait_for(save_started.wait(), 5)
+                try:
+                    await frame.locator("#timeout").fill(str(701 + index))
+                    await expect(frame.locator("#save")).to_be_disabled()
+                finally:
+                    release_save.set()
+                await expect(frame.locator("#save")).to_be_enabled()
+                await expect(frame.locator("#timeout")).to_have_value(str(701 + index))
+                await expect(frame.locator(f"#{trigger}")).not_to_have_attribute(
+                    "aria-busy", "true"
+                )
+                await page.unroute("**/settings", delayed_settings)
+                await frame.locator("#save").click()
+                await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+                assert plugin.config["behavior"]["timeout"] == 701 + index
             await frame.get_by_role("button", name="音色与录音").click()
             await expect(frame.locator("#local-voices-panel")).to_be_hidden()
             await expect(frame.locator("#cloud-voices-panel")).to_be_visible()
@@ -965,6 +1086,45 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             assert saved_previews == [
                 {"voice_name": "工作台音色", "language_code": "zh"}
             ]
+            # Save A finishes after B is displayed: only A may receive A's voice ID.
+            await frame.locator("#preview-name").fill("预览 A")
+            await frame.locator("#create-preview").click()
+            await expect(frame.locator("#preview-message")).to_contain_text(
+                "预览 A", timeout=15000
+            )
+            save_started = asyncio.Event()
+            release_save = asyncio.Event()
+            pending_identity = []
+
+            async def delayed_preview_save(route):
+                pending_identity.append(route.request.post_data_json)
+                save_started.set()
+                await release_save.wait()
+                await route.continue_()
+
+            baseline_voice = plugin.config["cloud"]["voice_id"]
+            await page.route("**/voices/save-preview", delayed_preview_save)
+            await frame.locator("#save-preview").click()
+            await asyncio.wait_for(save_started.wait(), 5)
+            try:
+                await frame.locator("#preview-name").fill("预览 B")
+                await frame.locator("#create-preview").click()
+                await expect(frame.locator("#preview-message")).to_contain_text(
+                    "预览 B", timeout=15000
+                )
+            finally:
+                release_save.set()
+            await expect(frame.locator("#save-preview")).to_be_enabled()
+            await expect(frame.locator("#preview-result")).to_be_visible()
+            await expect(frame.locator("#preview-message")).to_contain_text("预览 B")
+            assert pending_identity[0]["preview_id"] == "preview_ui_2"
+            assert plugin.config["cloud"]["voice_id"] == baseline_voice
+            await page.unroute("**/voices/save-preview", delayed_preview_save)
+            await frame.locator("#save-preview").click()
+            await expect(frame.locator("#preview-result")).to_be_hidden()
+            assert saved_previews[-1]["voice_name"] == "预览 B"
+            assert len(saved_previews) == 3
+            assert plugin.config["cloud"]["voice_id"] == "voc_ui_saved_3"
             actual_frame = page.frames[1]
             for width, height in [
                 (1440, 1040),
@@ -1022,3 +1182,20 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
         web_server.should_exit = True
         await asyncio.wait_for(serving, 5)
         listener.close()
+
+
+async def test_reload_legacy_stream_format_keeps_workbench_accessible(loaded_plugin):
+    manager, context, metadata = loaded_plugin
+    plugin = metadata.star_cls
+    legacy = copy.deepcopy(dict(plugin.config))
+    legacy["cloud"].update(delivery="stream", output_format="flac")
+    path = Path(plugin.config.config_path)
+    path.write_text(json.dumps(legacy), encoding="utf-8-sig")
+    ok, error = await manager.reload(metadata.name)
+    assert ok, error
+    current = context.get_registered_star(metadata.name).star_cls
+    assert (await current.service.state())["config"]["cloud"]["output_format"] == "wav"
+    assert (
+        json.loads(path.read_text(encoding="utf-8-sig"))["cloud"]["output_format"]
+        == "flac"
+    )

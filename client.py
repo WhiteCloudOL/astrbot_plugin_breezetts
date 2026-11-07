@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 import aiohttp
 
-from .settings import BreezeError, api_root, validate_identifier
+from .settings import STREAM_FORMATS, BreezeError, api_root, validate_identifier
 from .storage import AUDIO_LIMIT, playable_audio
 
 
@@ -177,6 +177,11 @@ class BreezeClient:
                 raise BreezeError("本地服务返回了无效的 PCM 格式或采样率。")
             return playable_audio(raw, "pcm", int(rate))
         connection = config["cloud"]
+        if (
+            connection["delivery"] == "stream"
+            and connection["output_format"] not in STREAM_FORMATS
+        ):
+            raise BreezeError("官方流式接收仅支持 pcm、mp3、wav，不支持带后缀的格式。")
         if not connection["api_key"] or not connection["voice_id"]:
             raise BreezeError("请填写官方 API Key，并在音色库选择音色或填写音色 ID。")
         body = {

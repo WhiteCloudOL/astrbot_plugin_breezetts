@@ -134,6 +134,7 @@ DEFAULTS = {
         "history_max_mb": 256,
     },
 }
+STREAM_FORMATS = {"pcm", "mp3", "wav"}
 FORMATS = {
     "wav",
     "mp3",
@@ -338,6 +339,8 @@ def validate_config(value: dict) -> dict:
         "stream",
     }:
         raise BreezeError("官方输出格式或交付方式无效。")
+    if cloud["delivery"] == "stream" and cloud["output_format"] not in STREAM_FORMATS:
+        raise BreezeError("官方流式接收仅支持 pcm、mp3、wav，不支持带后缀的格式。")
     ranges = [
         ("local", "cfg_scale", 0.01, 10),
         ("local", "seed", 0, 2**32 - 1),

@@ -95,3 +95,13 @@ Apply to Draft, then Save Configuration to persist. Cancel or Escape discards di
 ![Breeze reference controls dialog](../images/expression-dialog-desktop.png)
 
 ![Mobile reference controls dialog](../images/expression-dialog-mobile.png)
+
+## Protocol and state validation
+
+Navigation is unchanged. HTTP stream delivery offers only bare `pcm`, `mp3` and `wav`. Switching from an incompatible format changes the draft to `wav` with an explicit notice; Save persists it. Sync and async delivery retain all format options.
+
+![Official delivery and format restrictions](../images/settings-cloud-formats.png)
+
+CosyVoice v3-plus custom voices do not support instructions. Custom voices on v3-flash and v3.5-plus/flash accept free instructions; system voices are checked separately against the documented emotion protocol. Manual protocol selection cannot bypass capability checks. The final merged instruction is limited to 100 weighted characters: Han ideographs (including Japanese/Korean Han) count as two, all other characters as one, including newlines and the fixed sentence wrapper. The control and prompt dialogs expose this rule.
+
+A remembered reference is marked Current Voice only while the local service uses reference mode. In plain/design mode, select that same recording to reactivate reference mode. Edits made during any settings save remain in the draft and re-enable Save. Saving an older preview cannot assign its voice ID to a newer preview or change the newer selection.

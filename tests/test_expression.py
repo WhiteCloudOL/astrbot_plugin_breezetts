@@ -454,3 +454,158 @@ async def test_qwen_generation_timeout_is_forwarded_to_sdk(
         provider, "Hello.", "warmly", expression_profile(config, provider)
     )
     assert calls[0]["request_timeout"] == 3
+
+
+@pytest.mark.parametrize(
+    ("model", "voice", "expected"),
+    [
+        ("cosyvoice-v3-plus", "cosyvoice-custom", ""),
+        ("cosyvoice-v3-flash", "cosyvoice-custom", "cosyvoice"),
+        ("cosyvoice-v3.5-plus", "cosyvoice-custom", "cosyvoice"),
+        ("cosyvoice-v3.5-flash", "cosyvoice-custom", "cosyvoice"),
+        ("cosyvoice-v3-plus", "longanyang", "cosyvoice_fixed"),
+        ("cosyvoice-v3-plus", "longanhuan", "cosyvoice_fixed"),
+        ("cosyvoice-v3-plus", "longhuhu_v3", ""),
+        ("cosyvoice-v3-flash", "longanyang", "cosyvoice_fixed"),
+        ("cosyvoice-v3-flash", "longhuhu_v3", "cosyvoice_fixed"),
+        ("cosyvoice-v3-flash", "longanhuan_v3", ""),
+        ("cosyvoice-v3.5-plus", "longanhuan", ""),
+        ("cosyvoice-v3-future", "cosyvoice-custom", ""),
+        ("cosyvoice-v2", "cosyvoice-custom", ""),
+    ],
+)
+def test_cosyvoice_model_voice_capabilities(model, voice, expected):
+    provider = SimpleNamespace(
+        provider_config={"type": "dashscope_tts"}, model_name=model, voice=voice
+    )
+    assert provider_preset(provider) == expected
+
+
+@pytest.mark.parametrize(
+    ("model", "voice", "override"),
+    [
+        ("cosyvoice-v3-plus", "cosyvoice-custom", "cosyvoice"),
+        ("cosyvoice-v3-flash", "longhuhu_v3", "cosyvoice"),
+        ("qwen-audio-3.1-tts-flash", "longanyang_v3.1", "qwen"),
+    ],
+)
+def test_manual_protocol_cannot_claim_unsupported_capabilities(
+    config, model, voice, override
+):
+    provider = SimpleNamespace(
+        provider_config={"type": "dashscope_tts"}, model_name=model, voice=voice
+    )
+    config["backend"] = "provider"
+    config["provider"]["preset"] = override
+    with pytest.raises(BreezeError):
+        expression_profile(config, provider)
+
+
+@pytest.mark.parametrize(
+    ("overall", "local", "valid"),
+    [
+        ("a" * 100, "", True),
+        ("a" * 101, "", False),
+        ("轻" * 50, "", True),
+        ("轻" * 50 + "a", "", False),
+        ("轻" * 52, "", False),
+        ("漢" * 50, "", True),
+        ("漢" * 50 + "。", "", False),
+        ("汉" * 20 + "a" * 60, "", True),
+        ("汉" * 20 + "a" * 61, "", False),
+        ("かな한글！" * 20, "", True),
+        ("𠀀" * 50, "", True),
+        ("𠀀" * 50 + "a", "", False),
+        ("轻" * 24, "a" * 51, True),
+        ("轻" * 24, "a" * 52, False),
+    ],
+)
+def test_cosyvoice_final_weighted_instruction_limit(config, overall, local, valid):
+    config["backend"] = "provider"
+    provider = SimpleNamespace(
+        provider_config={"type": "dashscope_tts"},
+        model_name="cosyvoice-v3-flash",
+        voice="cosyvoice-custom",
+    )
+    profile = expression_profile(config, provider)
+    if valid:
+        check_directions(profile, overall, local)
+    else:
+        with pytest.raises(BreezeError, match="100"):
+            check_directions(profile, overall, local)
+
+
+async def test_cosyvoice_rejects_merged_instruction_before_any_section(
+    service, config, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    config["backend"] = "provider"
+    config["behavior"]["dynamic_tone"] = True
+    provider = SimpleNamespace(
+        provider_config={"type": "dashscope_tts"},
+        model_name="cosyvoice-v3-flash",
+        voice="cosyvoice-custom",
+    )
+    service.context = SimpleNamespace(get_provider_by_id=lambda _: provider)
+    synthesize = AsyncMock()
+    monkeypatch.setattr("breezetts_test.service.provider_audio", synthesize)
+    with pytest.raises(BreezeError, match="100"):
+        await service.synthesize(
+            "[语气:轻声]你好。[语气:" + "轻" * 26 + "]再见。", instruction="轻" * 24
+        )
+    synthesize.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("direction", "valid"),
+    [("轻" * 50, True), ("轻" * 51, False), ("a" * 100, True), ("a" * 101, False)],
+)
+async def test_cosyvoice_weighted_limit_at_sdk_boundary(
+    config, wav_audio, monkeypatch, direction, valid
+):
+    pytest.importorskip("dashscope")
+    from dashscope.audio import tts_v2
+
+    calls = []
+
+    class Synthesizer:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+            self.request = SimpleNamespace(apikey="")
+
+        def call(self, text, timeout):
+            return wav_audio
+
+    monkeypatch.setattr(tts_v2, "SpeechSynthesizer", Synthesizer)
+    config["backend"] = "provider"
+    provider = SimpleNamespace(
+        provider_config={"type": "dashscope_tts"},
+        model_name="cosyvoice-v3-flash",
+        voice="cosyvoice-custom",
+        chosen_api_key="test-key",
+        request_headers={},
+        timeout_ms=1000,
+    )
+    if valid:
+        await provider_audio(
+            provider, "Hello.", direction, expression_profile(config, provider)
+        )
+        assert calls[0]["instruction"] == direction
+    else:
+        with pytest.raises(BreezeError, match="100"):
+            await provider_audio(
+                provider, "Hello.", direction, expression_profile(config, provider)
+            )
+        assert not calls
+
+
+@pytest.mark.parametrize(("size", "valid"), [(85, True), (86, False)])
+def test_cosyvoice_fixed_wrapper_counts_toward_limit(size, valid):
+    style = "a" * size
+    profile = {"key": "cosyvoice_fixed", "mode": "fixed", "styles": [style]}
+    if valid:
+        check_directions(profile, style)
+    else:
+        with pytest.raises(BreezeError, match="100"):
+            check_directions(profile, style)

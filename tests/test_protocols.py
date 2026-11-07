@@ -6,12 +6,13 @@ import copy
 import io
 import threading
 import wave
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
+import soundfile as sf
 from aiohttp import web
 from breezetts_test.client import BreezeClient
-from breezetts_test.settings import BreezeError
+from breezetts_test.settings import FORMATS, BreezeError
 
 
 async def test_local_random_seed_changes_per_request_without_mutating_settings(
@@ -338,3 +339,39 @@ async def test_close_cancels_chat_synthesis(server, service, config):
     with pytest.raises(asyncio.CancelledError):
         await task
     assert not service.requests and service.active == 0
+
+
+@pytest.mark.parametrize("output_format", sorted(FORMATS))
+async def test_cloud_stream_rejects_invalid_formats_before_transport(
+    config, wav_audio, output_format
+):
+    config["backend"] = "cloud"
+    config["cloud"].update(
+        api_key="test",
+        voice_id="voc_test",
+        delivery="stream",
+        output_format=output_format,
+    )
+    client = BreezeClient()
+    audio = wav_audio[44:] if output_format == "pcm" else wav_audio
+    if output_format == "mp3":
+        encoded = io.BytesIO()
+        sf.write(encoded, [0.0] * 240, 24000, format="MP3")
+        audio = encoded.getvalue()
+    client.request = AsyncMock(
+        return_value=(
+            audio,
+            {"Content-Type": "audio/" + output_format},
+            200,
+        )
+    )
+    if output_format in {"pcm", "mp3", "wav"}:
+        await client.synthesize(config, "Hello.")
+        assert client.request.await_args.kwargs["params"] == {
+            "output_format": output_format
+        }
+        assert client.request.await_args.args[2].endswith("/stream")
+    else:
+        with pytest.raises(BreezeError, match="流式"):
+            await client.synthesize(config, "Hello.")
+        client.request.assert_not_awaited()
