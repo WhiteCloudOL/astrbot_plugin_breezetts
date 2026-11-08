@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.2 — 2026-11-08
+
+- Deliver Breeze-owned speech segments before downstream splitters: leading text, standalone voice, and following text. Keep quotes and mentions with substantive text, preserve original punctuation and ordering, and retain text-only replies on their existing delivery path. No Splitter patches are required or shipped.
+- Add the default-enabled Whole-second Voice Output switch to Chat & Runtime, with a SnowLuma duration-rounding hint. Preserve the setting across saves and reloads; disabling it keeps the normal quiet buffer without whole-second alignment.
+- Prepare chat audio as WAV, preserve every original sample, count existing quiet tails toward a 400 ms buffer, and optionally pad total duration upward to whole seconds. Retain the selected workbench output format and enforce size limits after padding.
+- Log original synthesis text, actual sections, effective instructions and parameters, HTTP request/response status, and the resulting audio ID at INFO level. Correlate child requests with their synthesis ID while excluding authentication keys, upstream error bodies, and recording bytes.
+- Cover integer-second boundaries, PCM formats, delayed final HTTP chunks, setting persistence, desktop/mobile controls, failed delivery, and request isolation. Validate actual saved-configuration synthesis and adapter payloads, plus unchanged upstream Splitter voice-delivery contracts.
+
 ## v1.5.1 — 2026-11-07
 
 - Accept manually pasted official voice IDs without catalog synchronization or a required prefix, normalize clipboard padding, and distinguish missing credentials/voice settings from upstream access errors. Cover saved settings, plugin reload, real browser submission and all three delivery modes.
