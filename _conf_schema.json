@@ -250,6 +250,12 @@
         "hint": "先发送对应文字，再独立发送纯语音消息；不会把文字和语音放入同一消息。",
         "default": true
       },
+      "integer_second_audio": {
+        "type": "bool",
+        "description": "输出整数秒语音",
+        "hint": "SnowLuma 会四舍五入上报语音时长。开启后只在聊天语音末尾补静音至整数秒，减少尾音被提前结束的风险；默认开启。",
+        "default": true
+      },
       "tool_enabled": {
         "type": "bool",
         "description": "LLM 自主语音",

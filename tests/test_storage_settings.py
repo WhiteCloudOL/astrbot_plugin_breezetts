@@ -27,6 +27,20 @@ def test_existing_local_settings_enable_random_seed_by_default():
     assert validated["local"]["seed"] == 77
 
 
+def test_integer_second_audio_defaults_and_explicit_disable(config):
+    config["behavior"].pop("integer_second_audio")
+    assert validate_config(config)["behavior"]["integer_second_audio"] is True
+    config["behavior"]["integer_second_audio"] = False
+    assert validate_config(config)["behavior"]["integer_second_audio"] is False
+
+
+@pytest.mark.parametrize("value", [None, 1, "false"])
+def test_integer_second_audio_requires_boolean(config, value):
+    config["behavior"]["integer_second_audio"] = value
+    with pytest.raises(BreezeError, match="integer_second_audio"):
+        validate_config(config)
+
+
 @pytest.mark.parametrize("name", ["speech_prompt", "tone_prompt"])
 def test_editable_prompt_defaults_and_schema_agree(config, name):
     from pathlib import Path

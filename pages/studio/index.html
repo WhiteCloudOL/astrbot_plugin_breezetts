@@ -611,6 +611,11 @@
               </label>
               <small>先发对应文字，再单独发纯语音，避免平台吞掉混合消息</small>
               <label class="switch-row">
+                <span>输出整数秒语音</span>
+                <input id="integer-second-audio" data-config="behavior.integer_second_audio" type="checkbox" role="switch" class="switch" aria-describedby="integer-second-hint" />
+              </label>
+              <small id="integer-second-hint">SnowLuma 会四舍五入上报语音时长。开启后只在聊天语音末尾补静音至整数秒，减少尾音被提前结束的风险</small>
+              <label class="switch-row">
                 <span>LLM 自主语音</span>
                 <input data-config="behavior.tool_enabled" type="checkbox" role="switch" class="switch" />
               </label>
