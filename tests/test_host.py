@@ -110,6 +110,7 @@ async def test_reload_upgrades_saved_behavior_settings(loaded_plugin):
         "group_trigger_probability",
         "min_interval_seconds",
         "quote_keep_text",
+        "integer_second_audio",
     ):
         legacy["behavior"].pop(key)
     config_path = Path(first.config.config_path)
@@ -122,6 +123,8 @@ async def test_reload_upgrades_saved_behavior_settings(loaded_plugin):
     behavior = snapshot["config"]["behavior"]
     assert behavior["auto_tts"] and behavior["trigger_probability"] == 25
     assert behavior["quote_keep_text"] is False
+    assert behavior["integer_second_audio"] is True
+    behavior["integer_second_audio"] = False
     assert behavior["private_trigger_probability"] == -1
     assert behavior["group_trigger_probability"] == -1
     assert behavior["min_interval_seconds"] == 90
@@ -131,6 +134,11 @@ async def test_reload_upgrades_saved_behavior_settings(loaded_plugin):
     assert saved["behavior"]["group_trigger_probability"] == 10
     assert saved["local"]["api_key"] == "upgrade-test-local-key"
     assert len(context.registered_web_apis) == 12
+
+    ok, error = await manager.reload(metadata.name)
+    assert ok, error
+    current = context.get_registered_star(metadata.name).star_cls
+    assert current.service.settings()["behavior"]["integer_second_audio"] is False
 
 
 @pytest.fixture
@@ -336,7 +344,8 @@ async def test_real_message_command_and_auto_reply(loaded_plugin, server, caplog
     results[0].chain.insert(0, Reply(id="source", sender_id="user"))
     event.set_result(results[0])
     await plugin.preserve_speech_order(event)
-    assert len(results[0].chain) == 1 and isinstance(results[0].chain[0], Record)
+    assert not results[0].chain
+    assert len(event.sent.chain) == 1 and isinstance(event.sent.chain[0], Record)
     await plugin.release_speech_audio(event)
     event.set_extra("breezetts_speech_turn", None)
     plugin.config["behavior"].update(auto_tts=True, keep_text=False)
@@ -1005,6 +1014,11 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
                 frame.locator('[data-config="behavior.quote_keep_text"]')
             ).not_to_be_checked()
             await frame.locator('[data-config="behavior.quote_keep_text"]').check()
+            await expect(frame.locator("#integer-second-audio")).to_be_checked()
+            await expect(frame.locator("#integer-second-hint")).to_contain_text(
+                "SnowLuma"
+            )
+            await frame.locator("#integer-second-audio").uncheck()
             await frame.locator('[data-config="behavior.auto_tts"]').uncheck()
             await expect(frame.locator("#trigger-probability")).to_be_disabled()
             await frame.locator("#clear-cloud-key").click()
@@ -1023,6 +1037,27 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             )
             assert plugin.config["behavior"]["history_max_mb"] == 128
             assert plugin.config["behavior"]["quote_keep_text"] is True
+            assert plugin.config["behavior"]["integer_second_audio"] is False
+            await page.reload()
+            await frame.get_by_role("button", name="连接与设置").click()
+            await expect(frame.locator("#integer-second-audio")).not_to_be_checked()
+            await frame.locator("#integer-second-audio").check()
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            assert plugin.config["behavior"]["integer_second_audio"] is True
+            viewport = page.viewport_size
+            for width, height, suffix in [
+                (1440, 1040, "desktop"),
+                (390, 844, "mobile"),
+            ]:
+                await page.set_viewport_size({"width": width, "height": height})
+                await frame.locator(
+                    "#integer-second-audio"
+                ).scroll_into_view_if_needed()
+                await page.screenshot(
+                    path=str(screenshot_dir / f"integer-second-audio-{suffix}.png")
+                )
+            await page.set_viewport_size(viewport)
             await expect(frame.locator("#cache-usage")).to_contain_text("MiB")
             await frame.locator("#cloud-key").fill("browser-test-key")
             await frame.locator('[data-config="behavior.auto_tts"]').check()

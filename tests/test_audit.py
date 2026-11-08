@@ -141,7 +141,11 @@ async def test_completed_audio_survives_cleanup_failure(
     assert "cleanup failed" in caplog.text and "private-key-test" not in caplog.text
 
 
-async def test_failed_job_logs_only_safe_code(service, config, server, caplog):
+async def test_failed_job_logs_original_text_and_safe_error(
+    service, config, server, caplog
+):
+    caplog.set_level("INFO")
+
     async def handle(_request):
         return web.Response(status=401, text="private-key-test")
 
@@ -153,10 +157,8 @@ async def test_failed_job_logs_only_safe_code(service, config, server, caplog):
     await task
     assert service.jobs[job["id"]]["status"] == "failed"
     assert "upstream_http_401" in caplog.text
-    assert (
-        "private-key-test" not in caplog.text
-        and "private-input-text" not in caplog.text
-    )
+    assert "private-key-test" not in caplog.text
+    assert "private-input-text" in caplog.text
     assert "private-key-test" not in json.dumps(service.jobs)
 
 

@@ -11,7 +11,12 @@ from .storage import AUDIO_LIMIT
 
 
 def join_breeze_audio(
-    audio: list[bytes], texts: list[str], *, tags: tuple[str, ...] | None = None
+    audio: list[bytes],
+    texts: list[str],
+    *,
+    tags: tuple[str, ...] | None = None,
+    minimum_tail_ms: int = 0,
+    whole_seconds: bool = False,
 ) -> bytes:
     """Join matching WAV sections and preserve natural pauses between directions.
 
@@ -19,6 +24,9 @@ def join_breeze_audio(
         audio: Complete PCM WAV sections from one synthesis request.
         texts: Matching sections used to determine punctuation and explicit pauses.
         tags: Selected provider's native controls, or Breeze defaults when omitted.
+        minimum_tail_ms: Minimum quiet tail for platform transcoding and playback.
+        whole_seconds: Pad total duration upward to whole seconds after adding
+            the quiet tail, protecting against rounded platform metadata.
 
     Returns:
         A single WAV file, with existing quiet edges counted toward each pause.
@@ -123,6 +131,16 @@ def join_breeze_audio(
                 target.writeframesraw(silence)
                 target.writeframesraw(frames)
                 previous_tail = quiet[1]
+            # Keep speech ahead of encoder delay and integer-second platform metadata.
+            missing = max(0, parameters[2] * minimum_tail_ms // 1000 - previous_tail)
+            if whole_seconds:
+                missing += (-target.getnframes() - missing) % parameters[2]
+            tail = (b"\x80" if parameters[1] == 1 else b"\x00") * (
+                missing * parameters[0] * parameters[1]
+            )
+            if total + len(tail) > AUDIO_LIMIT:
+                raise BreezeError("动态语调合并音频超过大小上限。")
+            target.writeframesraw(tail)
     except BreezeError:
         raise
     except (wave.Error, EOFError, ValueError, OverflowError):

@@ -1,8 +1,11 @@
 """Exercise selective speech with real AstrBot events and send stages."""
 
 import asyncio
+import base64
 import copy
+import io
 import json
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -32,6 +35,18 @@ class CapturedEvent(AstrMessageEvent):
             if isinstance(part, Record) and part.path:
                 assert Path(part.path).is_file()
         self.sent.append(copy.deepcopy(message.chain))
+
+
+def assert_chat_audio(raw):
+    """Verify the fake upstream's samples and quiet delivery tail.
+
+    Args:
+        raw: WAV bytes read from the file or serialized OneBot payload.
+    """
+    with wave.open(io.BytesIO(raw)) as audio:
+        assert audio.getframerate() == 24000 and audio.getnframes() == 24000
+        assert audio.readframes(2400) == b"\x01\x00" * 2400
+        assert audio.readframes(21600) == b"\x00\x00" * 21600
 
 
 async def decorate_model_result(plugin, event):
@@ -325,6 +340,8 @@ async def test_real_decorate_and_send_pipeline(
 
         splitter._send_proactive_segment = AsyncMock(side_effect=send_split)
         await decorate_model_result(plugin, event)
+        await plugin.preserve_speech_order(event)
+        assert not event.get_result().chain
         await splitter.on_decorating_result(event)
     pipeline = SimpleNamespace(
         astrbot_config=host, plugin_manager=SimpleNamespace(context=plugin.context)
@@ -352,9 +369,6 @@ async def test_real_decorate_and_send_pipeline(
     expected_after = (
         "结尾第一句。第二句。" if tagged else "第二句。中间语音结尾第一句。第二句。"
     )
-    if mode == "splitter":
-        expected_before = expected_before.replace("。", "")
-        expected_after = expected_after.replace("。", "")
     assert before == expected_before
     assert after == expected_after
     assert calls == ["中间语音" if tagged else "开头第一句。"]
@@ -409,6 +423,7 @@ async def test_tool_voice_and_caption_are_separate_messages(
     assert len(event.sent) == 2
     assert len(event.sent[0]) == 1 and isinstance(event.sent[0][0], Plain)
     assert len(event.sent[1]) == 1 and isinstance(event.sent[1][0], Record)
+    assert_chat_audio(Path(event.sent[1][0].path).read_bytes())
 
 
 @pytest.mark.parametrize("cancel_after_caption", [False, True])
@@ -423,6 +438,7 @@ async def test_command_caption_retains_audio_until_voice_or_cancellation(
     assert isinstance(caption.chain[0], Plain)
     identifier = next(iter(plugin.service.delivery_audio))
     path = plugin.service.store.path(identifier)
+    assert_chat_audio(path.read_bytes())
     await plugin.release_speech_audio(event)
     await plugin.service.synthesize("另一条并发合成。")
     assert identifier in plugin.service.delivery_audio and path.is_file()
@@ -535,7 +551,7 @@ async def test_random_adaptation_adds_native_events_and_section_directions(
     )
     await decorate_model_result(plugin, event)
     await plugin.preserve_speech_order(event)
-    await event.send(event.get_result())
+    assert not event.get_result().chain
     assert calls == ["[轻笑]你终于来了，今天真开心，", "也别忘了休息。"]
     assert (
         spy.await_args_list[0]
@@ -749,7 +765,7 @@ async def test_fixed_provider_random_adaptation_and_caption_filtering(
     )
     await decorate_model_result(plugin, event)
     await plugin.preserve_speech_order(event)
-    await event.send(event.get_result())
+    assert not event.get_result().chain
     assert [type(chain[0]) for chain in event.sent] == [Plain, Record]
     assert event.sent[0][0].text == "你好呀。"
     assert provider.calls[0]["voice"]["emotion"] == (
@@ -1478,10 +1494,12 @@ async def test_onebot_random_voice_is_standalone_with_live_splitter_defaults(
     keep_text,
     group,
     forward_threshold,
+    caplog,
     remaining_text=True,
     quote_keep_text=None,
 ):
     """Check serialized adapter payloads rather than flattened component counts."""
+    caplog.set_level("INFO")
     from astrbot.core.pipeline.respond.stage import RespondStage
     from astrbot.core.pipeline.result_decorate.stage import ResultDecorateStage
     from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
@@ -1585,6 +1603,8 @@ async def test_onebot_random_voice_is_standalone_with_live_splitter_defaults(
         )
         splitter._simple_overrides.update(delay_strategy="fixed", fixed_delay=0)
         await decorate_model_result(plugin, event)
+        await plugin.preserve_speech_order(event)
+        assert not any(isinstance(part, Record) for part in event.get_result().chain)
         await splitter.on_decorating_result(event)
 
     pipeline = SimpleNamespace(
@@ -1602,6 +1622,9 @@ async def test_onebot_random_voice_is_standalone_with_live_splitter_defaults(
     if voices:
         assert len(voices[0]) == 1
         assert voices[0][0]["data"]["file"].startswith("base64://UklGR")
+        assert_chat_audio(
+            base64.b64decode(voices[0][0]["data"]["file"].removeprefix("base64://"))
+        )
     captions = "".join(
         c["data"]["text"] for p in payloads for c in p if c["type"] == "text"
     )
@@ -1623,13 +1646,14 @@ async def test_onebot_random_voice_is_standalone_with_live_splitter_defaults(
         assert any(c["type"] == "text" and c["data"]["text"].strip() for c in quoted[0])
     assert calls == ([] if quote_keep_text is False else [first])
     assert not plugin.service.delivery_audio
+    assert "[Splitter] 检测到语音输出" not in caplog.text
 
 
 @pytest.mark.parametrize("mode", ["off", "native", "splitter"])
 @pytest.mark.parametrize("quote_keep_text", [False, True])
 @pytest.mark.parametrize("remaining_text", [False, True])
 async def test_onebot_quoted_reply_policy(
-    speech_plugin, mode, quote_keep_text, remaining_text
+    speech_plugin, mode, quote_keep_text, remaining_text, caplog
 ):
     await test_onebot_random_voice_is_standalone_with_live_splitter_defaults(
         speech_plugin,
@@ -1637,6 +1661,7 @@ async def test_onebot_quoted_reply_policy(
         False,
         True,
         100000,
+        caplog,
         remaining_text=remaining_text,
         quote_keep_text=quote_keep_text,
     )
@@ -2127,7 +2152,8 @@ async def test_random_audio_submission_is_logged_once_at_nested_boundaries(
     assert len(sender.await_args.args[1].chain) == 1
     assert isinstance(sender.await_args.args[1].chain[0], Record)
     assert caplog.text.count("Breeze audio submitted") == 1
-    assert private_text not in caplog.text
+    assert private_text in caplog.text
+    assert "Breeze synthesis started" in caplog.text
     assert not plugin.service.delivery_audio
 
 
@@ -2193,7 +2219,7 @@ async def test_random_adaptation_may_choose_no_tags_or_direction(
     )
     await decorate_model_result(plugin, event)
     await plugin.preserve_speech_order(event)
-    await event.send(event.get_result())
+    assert not event.get_result().chain
     assert calls == ["自然朗读这句台词。"]
     assert spy.await_args.args[0]["local"]["instruction"] == ""
     assert [type(chain[0]) for chain in event.sent] == [Plain, Record]
@@ -2233,7 +2259,7 @@ async def test_breeze_adaptation_uses_unlisted_free_direction_with_curated_refer
     )
     await decorate_model_result(plugin, event)
     await plugin.preserve_speech_order(event)
-    await event.send(event.get_result())
+    assert not event.get_result().chain
     assert calls == ["[轻笑]" + original]
     assert spy.await_args.args[0]["local"]["instruction"] == direction
     assert event.sent[0][0].text == original

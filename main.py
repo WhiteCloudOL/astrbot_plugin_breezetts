@@ -359,12 +359,12 @@ class BreezeTTS(Star):
         """
         await self.speech.decorate(event)
 
-    @filter.on_decorating_result(priority=-(2**63))
+    @filter.on_decorating_result(priority=499)
     async def preserve_speech_order(self, event: AstrMessageEvent) -> None:
-        """Send leading text before the host extracts standalone voice messages.
+        """Deliver owned speech segments before downstream message splitters.
 
         Args:
-            event: Decorated event after optional third-party splitting.
+            event: Event containing the selected speech and surrounding content.
         """
         result = event.get_result()
         state = event.get_extra(TURN_KEY)
@@ -438,77 +438,41 @@ class BreezeTTS(Star):
                 isinstance(part, Reply) for part in result.chain
             ):
                 result.chain.insert(0, Reply(id=event.message_obj.message_id))
-        segmented = settings.get("segmented_reply", {})
-        forward_audio = event.get_platform_name() == "aiocqhttp" and sum(
-            len(part.text) for part in result.chain if isinstance(part, Plain)
-        ) > settings.get("forward_threshold", 1500)
-        if (
-            not forward_audio
-            and segmented.get("enable")
-            and event.get_platform_name()
-            not in {
-                "qq_official_webhook",
-                "weixin_official_account",
-                "dingtalk",
-            }
+        if not any(
+            isinstance(part, Record)
+            and part.path
+            and Path(part.path).stem in state.audio_ids
+            for part in result.chain
         ):
             return
-        for index, component in enumerate(result.chain):
-            if (
-                isinstance(component, Record)
-                and component.path
-                and Path(component.path).stem in state.audio_ids
-            ):
-                prefix = result.chain[:index]
-                if any(
-                    isinstance(part, Plain)
-                    and part.text.strip()
-                    or not isinstance(part, (Plain, Reply, At, AtAll))
-                    for part in prefix
+        try:
+            # The delivery guard partitions text, pure voice, and following content.
+            # Downstream decorators receive an empty result after successful delivery.
+            if await event.send(result.derive(list(result.chain))) is False:
+                raise RuntimeError("Breeze speech segments were rejected by the sender")
+        except Exception as exc:
+            self.logger.error(
+                "Breeze speech segment delivery failed (%s); retaining text.",
+                type(exc).__name__,
+            )
+            fallback = []
+            visible = "".join(
+                part.text for part in result.chain if isinstance(part, Plain)
+            )
+            for part in result.chain:
+                if (
+                    isinstance(part, Record)
+                    and part.path
+                    and Path(part.path).stem in state.audio_ids
                 ):
-                    try:
-                        if await event.send(result.derive(prefix)) is False:
-                            raise RuntimeError(
-                                "Breeze leading text was rejected by the sender"
-                            )
-                        del result.chain[:index]
-                    except Exception as exc:
-                        self.logger.error(
-                            "Breeze leading text delivery failed (%s).",
-                            type(exc).__name__,
-                        )
-                        # Leave the text for the host, but never send voice ahead of it.
-                        for voice in result.chain[:]:
-                            if (
-                                isinstance(voice, Record)
-                                and voice.path
-                                and Path(voice.path).stem in state.audio_ids
-                            ):
-                                result.chain.remove(voice)
-                                if voice.text and not any(
-                                    isinstance(part, Plain) and voice.text in part.text
-                                    for part in result.chain
-                                ):
-                                    result.chain.insert(0, Plain(voice.text))
-                        await self.service.release_audio(state.audio_ids)
-                        return
-                if forward_audio:
-                    # The host will wrap the remaining long text in a forward node.
-                    # Voice must leave before that node is built.
-                    result.chain.remove(component)
-                    try:
-                        await event.send(result.derive([component]))
-                    except Exception as exc:
-                        self.logger.error(
-                            "Breeze voice delivery before forwarding failed (%s).",
-                            type(exc).__name__,
-                        )
-                        if component.text and not any(
-                            isinstance(part, Plain) and component.text in part.text
-                            for part in result.chain
-                        ):
-                            result.chain.insert(0, Plain(component.text))
-                break
+                    if part.text and part.text not in visible:
+                        fallback.append(Plain(part.text))
+                else:
+                    fallback.append(part)
+            result.chain[:] = fallback
+            await self.service.release_audio(state.audio_ids)
+            return
+        result.chain.clear()
 
     @filter.after_message_sent()
     async def release_speech_audio(self, event: AstrMessageEvent) -> None:

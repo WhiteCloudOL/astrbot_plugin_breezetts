@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import re
 import secrets
+import uuid
+from contextvars import ContextVar
 from urllib.parse import quote
 
 import aiohttp
@@ -14,11 +17,14 @@ import aiohttp
 from .settings import STREAM_FORMATS, BreezeError, api_root, validate_identifier
 from .storage import AUDIO_LIMIT, playable_audio
 
+SYNTHESIS_ID: ContextVar[str] = ContextVar("breezetts_synthesis_id", default="")
+
 
 class BreezeClient:
     """Own a reusable HTTP session and never forward keys across redirects."""
 
-    def __init__(self):
+    def __init__(self, logger=None):
+        self.logger = logger or logging.getLogger(__name__)
         self.session: aiohttp.ClientSession | None = None
         self.closed = False
 
@@ -45,6 +51,7 @@ class BreezeClient:
         path: str,
         *,
         raw: bool = False,
+        request_id: str = "",
         max_json_bytes: int = 2 * 1024 * 1024,
         **kwargs,
     ):
@@ -55,6 +62,7 @@ class BreezeClient:
             method: HTTP method.
             path: Plugin-controlled path relative to the version root.
             raw: Return audio bytes and response headers instead of JSON.
+            request_id: Correlation identifier inherited from synthesis when available.
             max_json_bytes: Size limit for JSON, including embedded preview audio.
             **kwargs: JSON, multipart data, and query parameters.
 
@@ -66,6 +74,14 @@ class BreezeClient:
         """
         await self.start()
         assert self.session is not None
+        request_id = request_id or uuid.uuid4().hex[:12]
+        self.logger.info(
+            "Breeze HTTP request (request_id=%s, method=%s, url=%s, params=%r).",
+            request_id,
+            method,
+            api_root(config["base_url"]) + "/" + path,
+            kwargs.get("params", {}),
+        )
         headers = (
             {"Authorization": "Bearer " + config["api_key"]}
             if config["api_key"]
@@ -102,13 +118,31 @@ class BreezeClient:
                     data.extend(chunk)
                     if len(data) > limit:
                         raise BreezeError("服务响应超过大小上限。")
+                self.logger.info(
+                    "Breeze HTTP response (request_id=%s, status=%s, bytes=%s).",
+                    request_id,
+                    response.status,
+                    len(data),
+                )
                 if raw:
                     return bytes(data), response.headers, response.status
                 try:
                     return json.loads(data)
                 except (ValueError, UnicodeDecodeError):
                     raise BreezeError("服务未返回有效 JSON，请检查服务地址。") from None
-        except (aiohttp.ClientError, TimeoutError, asyncio.TimeoutError):
+        except BreezeError as exc:
+            self.logger.warning(
+                "Breeze HTTP request failed (request_id=%s, code=%s).",
+                request_id,
+                exc.code,
+            )
+            raise
+        except (aiohttp.ClientError, TimeoutError, asyncio.TimeoutError) as exc:
+            self.logger.warning(
+                "Breeze HTTP transport failed (request_id=%s, error=%s).",
+                request_id,
+                type(exc).__name__,
+            )
             # Never include upstream exception strings: they can contain URLs or keys.
             raise BreezeError(
                 "连接失败、超时或音频流中断，请检查服务是否启动及网络连接。",
@@ -131,6 +165,8 @@ class BreezeClient:
         Raises:
             BreezeError: If required voice data or upstream responses are invalid.
         """
+        parent = SYNTHESIS_ID.get()
+        request_id = (parent + "." if parent else "") + uuid.uuid4().hex[:8]
         if config["backend"] == "local":
             connection = config["local"]
             if not connection["instruction"].strip() and connection["cfg_scale"] != 1:
@@ -138,14 +174,15 @@ class BreezeClient:
                     "普通朗读与纯音色复刻请将 CFG 设为 1；使用更高 CFG 时请填写声音或语气描述。"
                 )
             form = aiohttp.FormData()
-            for key, value in {
+            payload = {
                 "text": text,
                 "instruction": connection["instruction"],
                 "cfg_scale": connection["cfg_scale"],
                 "seed": secrets.randbits(32)
                 if connection["random_seed"]
                 else connection["seed"],
-            }.items():
+            }
+            for key, value in payload.items():
                 form.add_field(key, str(value))
             if connection["mode"] == "reference":
                 if reference is None or not reference[1].strip():
@@ -161,8 +198,20 @@ class BreezeClient:
                 connection["mode"] == "design" and not connection["instruction"].strip()
             ):
                 raise BreezeError("声音设计模式需要填写声音描述。")
+            self.logger.info(
+                "Breeze synthesis payload (request_id=%s, backend=local, payload=%r, reference_text=%r, reference_bytes=%s).",
+                request_id,
+                payload,
+                reference[1] if reference else "",
+                len(reference[0]) if reference else 0,
+            )
             raw, headers, _ = await self.request(
-                connection, "POST", "audio/speech", raw=True, data=form
+                connection,
+                "POST",
+                "audio/speech",
+                raw=True,
+                data=form,
+                request_id=request_id,
             )
             if headers.get("Content-Type", "").split(";")[0] not in {
                 "audio/pcm",
@@ -207,8 +256,19 @@ class BreezeClient:
             path += "/stream"
         else:
             params["delivery"] = connection["delivery"]
+        self.logger.info(
+            "Breeze synthesis payload (request_id=%s, backend=cloud, payload=%r).",
+            request_id,
+            body,
+        )
         raw, headers, status = await self.request(
-            connection, "POST", path, raw=True, params=params, json=body
+            connection,
+            "POST",
+            path,
+            raw=True,
+            params=params,
+            json=body,
+            request_id=request_id,
         )
         if status == 202:
             try:
@@ -224,7 +284,7 @@ class BreezeClient:
             validate_identifier(job_id, "后台任务 ID", 200)
             path = "generation-jobs/" + quote(job_id, safe="")
             while True:
-                job = await self.request(connection, "GET", path)
+                job = await self.request(connection, "GET", path, request_id=request_id)
                 if not isinstance(job, dict) or job.get("generation_job_id") != job_id:
                     raise BreezeError("官方后台任务响应无效。")
                 state = job.get("status")
@@ -235,6 +295,7 @@ class BreezeClient:
                         path + "/audio",
                         raw=True,
                         params={"output_format": connection["output_format"]},
+                        request_id=request_id,
                     )
                     break
                 if not isinstance(state, str) or state not in {

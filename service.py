@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 from .breeze_audio import join_breeze_audio
 from .breeze_control import clean_breeze_text, parse_breeze_text
-from .client import BreezeClient
+from .client import SYNTHESIS_ID, BreezeClient
 from .expression import PRESETS, check_directions, expression_profile, provider_preset
 from .provider_audio import provider_audio
 from .settings import (
@@ -34,7 +34,7 @@ class BreezeService:
         self.root = root
         self.logger = logger
         self.context = context
-        self.client = BreezeClient()
+        self.client = BreezeClient(logger)
         self.store: AudioStore | None = None
         self.lock = asyncio.Lock()
         self.slots = asyncio.Semaphore(2)
@@ -370,7 +370,7 @@ class BreezeService:
         Args:
             text: Text to synthesize.
             config: Optional validated settings captured when a job was submitted.
-            for_delivery: Reserve the output until platform delivery completes.
+            for_delivery: Prepare a WAV with a quiet tail and reserve it for delivery.
             instruction: Optional per-call direction, used only with dynamic tone enabled.
 
         Returns:
@@ -431,7 +431,18 @@ class BreezeService:
             raise BreezeError("插件已有 8 个请求正在处理或排队，请稍后重试。")
         self.active += 1
         reference = None
+        synthesis_id = uuid.uuid4().hex[:12]
+        token = SYNTHESIS_ID.set(synthesis_id)
         try:
+            self.logger.info(
+                "Breeze synthesis started (synthesis_id=%s, backend=%s, text=%r, instruction=%r, dynamic_tone=%s, for_delivery=%s).",
+                synthesis_id,
+                config["backend"],
+                text,
+                instruction,
+                config["behavior"]["dynamic_tone"],
+                for_delivery,
+            )
             async with self.lock:
                 try:
                     await self.prune_audio(self.settings()["behavior"]["history_limit"])
@@ -464,6 +475,34 @@ class BreezeService:
                                 if profile["mode"] == "fixed"
                                 else "\n".join(filter(None, (instruction, direction)))
                             )
+                            provider_config = getattr(
+                                host_provider, "provider_config", {}
+                            )
+                            parameters = {
+                                key: provider_config[key]
+                                for key in (
+                                    "id",
+                                    "type",
+                                    "model",
+                                    "model_id",
+                                    "voice",
+                                    "voice_id",
+                                    "sample_rate",
+                                    "format",
+                                )
+                                if key in provider_config
+                                and type(provider_config[key])
+                                in (str, int, float, bool)
+                            }
+                            self.logger.info(
+                                "Breeze provider synthesis request (synthesis_id=%s, section=%s/%s, text=%r, instruction=%r, parameters=%r).",
+                                synthesis_id,
+                                index + 1,
+                                len(sections),
+                                fragment,
+                                combined,
+                                parameters,
+                            )
                             output = await provider_audio(
                                 host_provider, fragment, combined, profile
                             )
@@ -482,7 +521,8 @@ class BreezeService:
                             raise BreezeError(
                                 "默认描述与动态语气合并后超过 4000 字符。"
                             )
-                        if backend == "cloud" and len(sections) > 1:
+                        if backend == "cloud" and (for_delivery or len(sections) > 1):
+                            # Chat delivery needs lossless samples before tail protection.
                             section_config["cloud"]["output_format"] = "wav"
                         self.logger.debug(
                             "Breeze section synthesis (index=%s, total=%s, characters=%s, directed=%s).",
@@ -504,16 +544,26 @@ class BreezeService:
                         size += len(output[0])
                         if size > AUDIO_LIMIT:
                             raise BreezeError("动态语调合成音频超过大小上限。")
-                    if len(outputs) == 1:
+                    if len(outputs) == 1 and not for_delivery:
                         return outputs[0]
                     if any(extension != "wav" for _, extension in outputs):
                         raise BreezeError("动态语调分段必须返回 WAV 音频。")
-                    return await asyncio.to_thread(
+                    result = await asyncio.to_thread(
                         join_breeze_audio,
                         [raw for raw, _ in outputs],
                         [part for part, _ in sections],
                         tags=profile["tags"],
-                    ), "wav"
+                        minimum_tail_ms=400 if for_delivery else 0,
+                        whole_seconds=for_delivery
+                        and config["behavior"]["integer_second_audio"],
+                    )
+                    if for_delivery:
+                        self.logger.debug(
+                            "Breeze chat audio prepared (format=wav, minimum_tail_ms=400, whole_seconds=%s, sections=%s).",
+                            config["behavior"]["integer_second_audio"],
+                            len(outputs),
+                        )
+                    return result, "wav"
 
             if self.closed:
                 raise BreezeError("插件正在关闭，请稍后重试。")
@@ -568,13 +618,38 @@ class BreezeService:
                         "Breeze output saved; history cleanup failed (%s).",
                         type(exc).__name__,
                     )
+                self.logger.info(
+                    "Breeze synthesis completed (synthesis_id=%s, audio_id=%s, format=%s, bytes=%s).",
+                    synthesis_id,
+                    result["id"],
+                    extension,
+                    len(audio),
+                )
                 return result
         except OSError as exc:
-            self.logger.error("Breeze audio storage failed (%s).", type(exc).__name__)
+            self.logger.error(
+                "Breeze audio storage failed (synthesis_id=%s, error=%s).",
+                synthesis_id,
+                type(exc).__name__,
+            )
             raise BreezeError(
                 "音频文件操作失败，请检查数据目录权限与可用空间。", code="storage"
             ) from None
+        except asyncio.CancelledError:
+            self.logger.info(
+                "Breeze synthesis cancelled (synthesis_id=%s).", synthesis_id
+            )
+            raise
+        except Exception as exc:
+            self.logger.warning(
+                "Breeze synthesis failed (synthesis_id=%s, code=%s, error=%s).",
+                synthesis_id,
+                getattr(exc, "code", "unexpected"),
+                type(exc).__name__,
+            )
+            raise
         finally:
+            SYNTHESIS_ID.reset(token)
             self.active -= 1
 
     async def prune_audio(
