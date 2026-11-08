@@ -513,16 +513,24 @@ async def test_tone_requests_keep_dynamic_values_after_a_stable_system_prefix(
     plugin.context.llm_generate = AsyncMock(
         return_value=LLMResponse(role="assistant", completion_text="{}")
     )
-    for message, passage in [("第一轮用户消息", "第一句台词。"), ("第二轮用户消息", "第二句台词。")]:
+    for message, passage in [
+        ("第一轮用户消息", "第一句台词。"),
+        ("第二轮用户消息", "第二句台词。"),
+    ]:
         assert await plugin.speech.adapt_random_tone(
             event_factory(message), passage, plugin.service.settings()
         ) == (passage, "")
-    first, second = [call.kwargs for call in plugin.context.llm_generate.await_args_list]
+    first, second = [
+        call.kwargs for call in plugin.context.llm_generate.await_args_list
+    ]
     assert first["system_prompt"] == second["system_prompt"]
     assert first["prompt"] != second["prompt"]
     assert "第一轮用户消息" in first["prompt"] and "第一句台词。" in first["prompt"]
     assert "第二轮用户消息" in second["prompt"] and "第二句台词。" in second["prompt"]
-    assert "第一轮" not in first["system_prompt"] and "第一句" not in first["system_prompt"]
+    assert (
+        "第一轮" not in first["system_prompt"]
+        and "第一句" not in first["system_prompt"]
+    )
     if template.startswith("{passage}"):
         assert first["system_prompt"] == ""
     assert not calls

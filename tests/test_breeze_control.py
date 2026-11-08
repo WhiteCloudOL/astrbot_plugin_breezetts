@@ -36,7 +36,11 @@ def test_controls_preserve_literals_and_off_mode():
 
 @pytest.mark.parametrize(
     "prefix,tags",
-    [("[吸气]", None), ("[轻笑][停顿]", None), ("(custom breath)", ("(custom breath)",))],
+    [
+        ("[吸气]", None),
+        ("[轻笑][停顿]", None),
+        ("(custom breath)", ("(custom breath)",)),
+    ],
 )
 def test_leading_events_stay_with_the_following_spoken_section(prefix, tags):
     assert parse_breeze_text(
