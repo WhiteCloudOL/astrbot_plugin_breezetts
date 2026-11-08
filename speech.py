@@ -447,6 +447,7 @@ class SpeechDelivery:
         behavior = config["behavior"]
         if not behavior["dynamic_tone"] or not behavior["random_tone_adaptive"]:
             return text, ""
+        stage = "platform_profile"
         try:
             profile = self.service.profile(config)
 
@@ -461,35 +462,62 @@ class SpeechDelivery:
                 ] or await self.context.get_current_chat_provider_id(
                     event.unified_msg_origin
                 )
+                template = (
+                    behavior["tone_prompt"].strip()
+                    or DEFAULTS["behavior"]["tone_prompt"]
+                )
+                # Keep per-turn values after the stable system prefix, including custom templates.
+                dynamic = re.search(r"\{(?:user_message|passage)\}", template)
+                prefix = template[: dynamic.start()] if dynamic else template
+                suffix = template[dynamic.start() :] if dynamic else ""
                 return await self.context.llm_generate(
                     chat_provider_id=provider_id,
                     system_prompt=control_prompt(
                         local=config["backend"] == "local",
                         language=config["cloud"]["language_code"],
                         profile=profile,
-                        prompt=behavior["tone_prompt"].strip()
-                        or DEFAULTS["behavior"]["tone_prompt"],
-                        user_message=event.message_str,
-                        passage=text,
-                    ),
-                    prompt=json.dumps(
+                        prompt=prefix,
+                    )
+                    if prefix.strip()
+                    else "",
+                    prompt=(
+                        control_prompt(
+                            local=config["backend"] == "local",
+                            language=config["cloud"]["language_code"],
+                            profile=profile,
+                            prompt=suffix,
+                            user_message=event.message_str,
+                            passage=text,
+                        )
+                        + "\n\n"
+                        if suffix
+                        else ""
+                    )
+                    + json.dumps(
                         {"user_message": event.message_str[:1000], "passage": text},
                         ensure_ascii=False,
                     ),
                 )
 
+            stage = "llm_request"
             task = asyncio.create_task(choose())
             self.tone_tasks.add(task)
             try:
                 response = await asyncio.wait_for(task, timeout=20)
             finally:
                 self.tone_tasks.discard(task)
+            stage = "response_size"
             raw = response.completion_text
             if not isinstance(raw, str) or len(raw) > 32000:
                 raise ValueError("Invalid tone response size")
             raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I)
+            stage = "response_json"
             data = json.loads(raw)
-            direction = data.get("instruction", "") if isinstance(data, dict) else None
+            stage = "response_object"
+            if not isinstance(data, dict):
+                raise ValueError("Tone response must be an object")
+            stage = "instruction"
+            direction = data.get("instruction", "")
             if (
                 not isinstance(direction, str)
                 or len(direction) > 200
@@ -498,30 +526,36 @@ class SpeechDelivery:
                 or clean_breeze_text(direction, profile["tags"]) != direction
             ):
                 raise ValueError("Invalid tone direction")
+            stage = "controlled_passage"
             marked_text = data.get("text", text)
             if (
                 not isinstance(marked_text, str)
                 or len(marked_text) > behavior["max_characters"] + 1800
             ):
                 raise ValueError("Invalid controlled passage")
+            stage = "dialogue_preservation"
             if clean_breeze_text(marked_text, profile["tags"]) != clean_breeze_text(
                 text, profile["tags"]
             ):
                 raise ValueError("Tone adaptation rewrote spoken dialogue")
+            stage = "section_controls"
             sections = parse_breeze_text(
                 marked_text, enabled=True, tags=profile["tags"]
             )
+            stage = "synthesis_limits"
             if (
                 not sections
                 or sum(len(fragment) for fragment, _ in sections)
                 > behavior["max_characters"]
             ):
                 raise ValueError("Controlled passage exceeds synthesis limits")
+            stage = "platform_instruction"
             check_directions(
                 profile,
                 direction,
                 *(style for _, style in sections),
             )
+            stage = "existing_controls"
             markers = []
             for value in (text, marked_text):
                 controls = Counter()
@@ -536,17 +570,27 @@ class SpeechDelivery:
             if markers[0] - markers[1]:
                 raise ValueError("Tone adaptation changed existing controls")
             self.logger.info(
-                "Breeze random tone adapted (provider=%s, directed=%s, added_controls=%s, sections=%s).",
+                "Breeze random tone adapted (provider=%s, directed=%s, added_controls=%s, sections=%s, reported_cached_tokens=%s).",
                 "configured" if behavior["tone_provider_id"] else "session",
                 bool(direction.strip()),
                 sum((markers[1] - markers[0]).values()),
                 len(sections),
+                getattr(getattr(response, "usage", None), "input_cached", None),
             )
             return marked_text, direction.strip()
         except Exception as exc:
+            hint = (
+                " Check behavior.tone_prompt: include {output_protocol} or equivalent JSON instructions."
+                if stage in {"response_json", "response_object"}
+                else ""
+            )
             self.logger.warning(
-                "Breeze random tone adaptation failed (error=%s); using configured tone.",
+                "Breeze random tone adaptation failed (stage=%s, error=%s, provider=%s); "
+                "using configured tone.%s",
+                stage,
                 type(exc).__name__,
+                "configured" if behavior["tone_provider_id"] else "session",
+                hint,
             )
             return text, ""
 

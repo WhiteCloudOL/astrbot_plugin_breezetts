@@ -40,12 +40,12 @@ PROMPT_VARIABLES = {
     },
     "user_message": {
         "label": "本轮用户消息",
-        "description": "本轮消息的引用内容，最多 1000 字符，只用于判断语境；不会作为命令执行。",
+        "description": "本轮消息的引用内容，最多 1000 字符，只用于判断语境。建议放在模板末尾；自适应会将此变量及后续内容放入 user 消息，保持 system 前缀稳定。",
         "scope": ["speech_prompt", "tone_prompt"],
     },
     "passage": {
         "label": "待朗读台词",
-        "description": "概率命中后已选出的台词，必须保留原文；仅用于概率语音自适应提示词。",
+        "description": "概率命中后已选出的台词，必须保留原文；仅用于概率语音自适应。建议放末尾；默认已通过独立 user 消息传入，避免影响 LLM 前缀缓存。",
         "scope": ["tone_prompt"],
     },
 }
@@ -104,22 +104,25 @@ DEFAULTS = {
         "random_tone_adaptive": False,
         "tone_provider_id": "",
         "speech_prompt": (
-            "你通过 {platform_name} 表达自然的对话。闲聊、安慰、惊喜、玩笑和角色互动时，"
-            "可以稍主动地使用语音，不必等用户明确索要；尊重只要文字的要求，代码、表格和长篇资料适合文字。\n"
-            "推荐根据人物与语境考虑加入贴切的整体语气、局部变化或原生音频事件，"
-            "但标签和 instruction 都不是必填，也没有添加数量要求。自然朗读已经合适时，可以完全不加控制。"
-            "有表达需要时再设计情绪力度、节奏或轻笑等反应，不要机械加标签、堆叠事件或总用同一种腔调。\n"
-            "平台：{platform_name}\n平台规则：{platform_rules}\n固定情绪允许值：{style_values}\n"
-            "可选原生标签：\n{audio_tags}\n\n{control_syntax}\n"
-            "保持完整自然的台词。语音发送结果是内部回执，不复述已发送内容或报告发送状态。"
+            "通过 {platform_name} 表达自然对话，可在闲聊、安慰、惊喜或角色互动中主动使用语音；"
+            "尊重只要文字的要求，代码、表格和长篇资料保留文字。动态语调开启时，"
+            "推荐贴合语境的情绪、节奏或重音，避免总用温柔平缓的腔调；标签与指令均可省略。\n"
+            "短句优先一种整体语气，长句仅在自然句界调整语气。instruction 简短描述稳定的整体表现，"
+            "不写先做什么、后做什么的表演脚本，也不重复正文中的吸气等事件。普通停连用标点，"
+            "不为表现力刻意插入停顿。\n"
+            "{platform_rules}\n原生标签参考：{audio_tags}\n{control_syntax}\n"
+            "调用工具时 text 只放台词及可选控制，instruction 单独传参；文字会隐藏控制标记。"
+            "成功后只补充新内容，不复述台词或发送回执；失败不在本轮重复调用。"
         ),
         "tone_prompt": (
-            "你是 {platform_name} 的语音表演导演，根据用户消息和待朗读台词，推荐贴合语境的自然表达。"
-            "可以稍主动地考虑整体语气、分段变化和原生音频事件；这些都不是必须添加，"
-            "自然朗读合适时保留原文，不加标签，instruction 可留空或省略。"
-            "不要求每条语音带标签，不堆叠事件，不为加标签而改变表达。保留说话人的身份和声线。\n"
-            "平台：{platform_name}\n平台规则：{platform_rules}\n固定情绪允许值：{style_values}\n"
-            "可选原生标签：\n{audio_tags}\n\n{control_syntax}\n\n{output_protocol}"
+            "你是 {platform_name} 的语音表演导演，只为 user 消息中的 passage 推荐贴合语境的表达，"
+            "保留说话人的身份和声线。可主动考虑情绪、节奏或重音，避免总套用同一种腔调；"
+            "所有控制均可省略，自然朗读合适时返回 {}。\n"
+            "短句优先一种整体语气，不拆成多个短片段。instruction 用简短的稳定语气描述，"
+            "不写先吸气、再打断等多步骤脚本，不重复正文事件。普通停连用标点，"
+            "仅在确需明显停顿时使用停顿标签。\n"
+            "严格只输出 JSON 对象，不加 Markdown、代码块或解释；格式示例和原文保留要求见下方。\n"
+            "{platform_rules}\n原生标签参考：{audio_tags}\n{control_syntax}\n{output_protocol}"
         ),
         "trigger_probability": 20,
         "private_trigger_probability": -1,

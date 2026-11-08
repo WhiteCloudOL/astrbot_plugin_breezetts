@@ -72,11 +72,14 @@ def join_breeze_audio(
                     if not frames or len(frames) != source.getnframes() * stride:
                         raise BreezeError("动态语调分段音频为空或不完整。")
                 quiet = []
+                # Measure 5 ms RMS windows so low-level noise does not add a full second.
                 # Count quiet edges only; never trim or overwrite original samples.
                 threshold = max(1, (1 << (current[1] * 8 - 1)) // 1024)
+                window = max(1, current[2] // 200)
+                limit = min(len(frames) // stride, current[2])
                 for reverse in (False, True):
-                    count = 0
-                    for position in range(min(len(frames) // stride, current[2])):
+                    count = energy = window_frames = 0
+                    for position in range(limit):
                         offset = (
                             len(frames) - (position + 1) * stride
                             if reverse
@@ -100,9 +103,16 @@ def join_breeze_audio(
                                 for channel in range(current[0])
                             ]
                         )
-                        if any(abs(value) > threshold for value in values):
-                            break
-                        count += 1
+                        energy += sum(value * value for value in values)
+                        window_frames += 1
+                        if window_frames == window or position + 1 == limit:
+                            if (
+                                energy
+                                > threshold * threshold * window_frames * current[0]
+                            ):
+                                break
+                            count = position + 1
+                            energy = window_frames = 0
                     quiet.append(count)
                 silence = b""
                 if index:
