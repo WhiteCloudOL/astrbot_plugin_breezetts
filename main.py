@@ -118,29 +118,27 @@ class BreezeTTS(Star):
     async def breeze_tts(
         self, event: AstrMessageEvent, text: str, instruction: str = ""
     ):
-        """Perform expressive dialogue with BreezeTTS and send a real voice message.
+        """Send selected dialogue as a real voice message using the configured service.
 
-        Choose only the passage to speak. Other content can remain ordinary text.
-        This tool uses its own service and voice configuration. Its result reports
-        actual delivery, including any configured text caption. Choose natural
-        conversational content and describe speech availability from the tool result.
-        After success, continue only with new content that has not been delivered.
-        Keep delivery acknowledgments and bracketed status messages out of dialogue.
-        Use voice proactively for fitting conversation, emotion and roleplay; respect
-        text-only requests. Follow the current provider's temporary control table.
-        Fixed platforms require exact allowed values; free platforms accept nuanced
-        natural-language performance. When dynamic tone is enabled, consider suitable
-        delivery intent, emotional intensity and rhythm when helpful. Tags and instructions are optional; plain narration is valid. instruction sets overall
-        delivery; [语气:description] / [style:direction] changes subsequent sections.
-        Use only the selected model's exact native event spellings. For free styles,
-        match the dialogue language; fixed API values retain their required spelling.
-        Use punctuation for timing, with no invented pause durations.
-        Dynamic controls are ignored when disabled. Captions are sent before voice,
-        in separate messages. A failed call is not a reason to repeat it in this turn.
+        Use voice proactively for fitting conversation or emotion; respect text-only
+        requests. text contains dialogue and optional controls, not JSON or analysis.
+        With dynamic tone enabled, consider fitting emotion or rhythm; tags and
+        instructions are optional. Fixed platforms need exact allowed styles. Breeze
+        accepts free delivery via instruction or [语气:description], while native
+        events use current catalog spellings. Prefer one overall tone for short
+        replies; change sections only at natural boundaries. Use brief steady
+        directions, not multi-step scripts or repeated vocal events. Put a section
+        direction before its dialogue and events, never empty or trailing. Normal
+        timing uses punctuation; pause tags are for deliberate pauses.
+
+        Dynamic controls are ignored when disabled. Captions hide controls and precede
+        voice in separate messages. The result is an internal receipt: after success,
+        continue only with new dialogue, or return empty text if complete. Do not
+        repeat delivered words or status, or retry a failed call this turn.
 
         Args:
-            text(string): The exact text to speak, up to the configured character limit.
-            instruction(string): Overall performance direction or one exact allowed style value, up to 200 characters. Follow current provider rules. Requires dynamic tone.
+            text(string): Exact spoken dialogue within the configured character limit, with optional supported controls when dynamic tone is enabled.
+            instruction(string): Optional brief overall tone, one line without tags, up to 200 characters; fixed platforms require one exact style. Omit for natural narration. Ignored when dynamic tone is disabled.
         """
         return await self.speech.tool(event, text, instruction)
 

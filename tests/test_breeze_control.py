@@ -35,6 +35,22 @@ def test_controls_preserve_literals_and_off_mode():
 
 
 @pytest.mark.parametrize(
+    "prefix,tags",
+    [("[吸气]", None), ("[轻笑][停顿]", None), ("(custom breath)", ("(custom breath)",))],
+)
+def test_leading_events_stay_with_the_following_spoken_section(prefix, tags):
+    assert parse_breeze_text(
+        prefix + "[语气:急促]少在那里自顾自[语气:认真]脑补奇怪的设定！",
+        enabled=True,
+        tags=tags,
+    ) == [(prefix + "少在那里自顾自", "急促"), ("脑补奇怪的设定！", "认真")]
+    assert parse_breeze_text(prefix, enabled=True, tags=tags) == [(prefix, "")]
+    assert parse_breeze_text(
+        "[语气:轻柔]" + prefix + "[语气:认真]你好。", enabled=True, tags=tags
+    ) == [(prefix, "轻柔"), ("你好。", "认真")]
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "[语气:]你好",
@@ -171,6 +187,8 @@ def test_complete_prompt_template_replaces_variables_once_without_hidden_suffix(
     assert "[laughs]\nhappy, sad" in result
     assert '"literal {audio_tags}"' in result and '"original {platform_name}"' in result
     assert "Both fields are optional" in result
+    assert "Return STRICT JSON only" in result and "No Markdown, code fences" in result
+    assert '{"text":"你好呀。","instruction":""}' in result
     assert "{control_syntax}" not in result
 
 

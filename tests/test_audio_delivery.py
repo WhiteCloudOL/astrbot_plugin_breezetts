@@ -64,6 +64,27 @@ def test_delivery_tail_cannot_exceed_audio_limit(monkeypatch):
         )
 
 
+def test_low_level_tail_noise_does_not_add_an_extra_whole_second():
+    rate = 24000
+    voice = b"\xff\x1f" * (rate * 24 // 10)
+    # Sparse quiet noise exceeds the old per-sample threshold but remains below RMS.
+    noise = (b"\x40\x00" + b"\x00\x00" * 119) * 70
+    original = voice + noise
+    source = io.BytesIO()
+    with wave.open(source, "wb") as audio:
+        audio.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+        audio.writeframes(original)
+    output = join_breeze_audio(
+        [source.getvalue()], ["Final words."], minimum_tail_ms=400, whole_seconds=True
+    )
+    with wave.open(io.BytesIO(output)) as audio:
+        assert audio.getnframes() == rate * 3
+        frames = audio.readframes(audio.getnframes())
+    assert frames.startswith(original)
+    assert frames[len(original) :] == b"\x00" * (len(frames) - len(original))
+    assert (len(frames) - len(voice)) // 2 >= rate * 400 // 1000
+
+
 @pytest.mark.parametrize("rate", [22050, 24000])
 @pytest.mark.parametrize(
     "ending", ["040", "080", "120", "490", "500-1", "500", "500+1", "510", "960", "999"]

@@ -493,6 +493,42 @@ async def test_random_adaptive_tone_uses_selected_provider_without_rewriting(
 
 
 @pytest.mark.parametrize(
+    "template",
+    [
+        "",
+        "Stable rules: {platform_rules}\nContext: {user_message}\n{passage}\n{output_protocol}",
+        "{passage}\n{output_protocol}",
+    ],
+)
+async def test_tone_requests_keep_dynamic_values_after_a_stable_system_prefix(
+    speech_plugin, event_factory, template
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(
+        dynamic_tone=True,
+        random_tone_adaptive=True,
+        tone_provider_id="tone-model",
+        tone_prompt=template,
+    )
+    plugin.context.llm_generate = AsyncMock(
+        return_value=LLMResponse(role="assistant", completion_text="{}")
+    )
+    for message, passage in [("第一轮用户消息", "第一句台词。"), ("第二轮用户消息", "第二句台词。")]:
+        assert await plugin.speech.adapt_random_tone(
+            event_factory(message), passage, plugin.service.settings()
+        ) == (passage, "")
+    first, second = [call.kwargs for call in plugin.context.llm_generate.await_args_list]
+    assert first["system_prompt"] == second["system_prompt"]
+    assert first["prompt"] != second["prompt"]
+    assert "第一轮用户消息" in first["prompt"] and "第一句台词。" in first["prompt"]
+    assert "第二轮用户消息" in second["prompt"] and "第二句台词。" in second["prompt"]
+    assert "第一轮" not in first["system_prompt"] and "第一句" not in first["system_prompt"]
+    if template.startswith("{passage}"):
+        assert first["system_prompt"] == ""
+    assert not calls
+
+
+@pytest.mark.parametrize(
     "dynamic,adaptive,probability",
     [(False, True, 100), (True, False, 100), (True, True, 0)],
 )
@@ -803,17 +839,25 @@ async def test_late_decorator_controls_are_cleaned_even_when_speech_is_disabled(
 
 
 @pytest.mark.parametrize(
-    "response",
+    "response,stage",
     [
-        "not JSON",
-        '{"instruction":null}',
-        '{"instruction":"[笑]"}',
-        '{"instruction":"' + "a" * 201 + '"}',
-        TimeoutError("private-model-secret"),
+        ("not JSON private-model-secret", "response_json"),
+        ("[]", "response_object"),
+        ("null", "response_object"),
+        ('"private-model-secret"', "response_object"),
+        ("x" * 32001, "response_size"),
+        ('{"instruction":null}', "instruction"),
+        ('{"instruction":"[笑]"}', "instruction"),
+        ('{"instruction":"' + "a" * 201 + '"}', "instruction"),
+        ('{"text":null}', "controlled_passage"),
+        ('{"text":"private-model-secret"}', "dialogue_preservation"),
+        ('{"text":"[语气:]完整台词保持原样。"}', "section_controls"),
+        (TimeoutError("private-model-secret"), "llm_request"),
+        (ValueError("private-model-secret"), "llm_request"),
     ],
 )
 async def test_random_tone_invalid_or_failed_llm_falls_back_safely(
-    speech_plugin, event_factory, response, caplog, monkeypatch
+    speech_plugin, event_factory, response, stage, caplog, monkeypatch
 ):
     plugin, calls, _ = speech_plugin
     plugin.config["behavior"].update(
@@ -842,6 +886,11 @@ async def test_random_tone_invalid_or_failed_llm_falls_back_safely(
     assert (
         "using configured tone" in caplog.text
         and "private-model-secret" not in caplog.text
+    )
+    assert f"stage={stage}, error=" in caplog.text
+    assert "provider=configured" in caplog.text
+    assert ("{output_protocol}" in caplog.text) == (
+        stage in {"response_json", "response_object"}
     )
     assert not plugin.speech.tone_tasks
     await plugin.release_speech_audio(event)
