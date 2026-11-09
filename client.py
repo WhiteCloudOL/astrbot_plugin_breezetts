@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 import aiohttp
 
+from .cpp_api import CppAPI
 from .settings import STREAM_FORMATS, BreezeError, api_root, validate_identifier
 from .storage import AUDIO_LIMIT, playable_audio
 
@@ -27,6 +28,7 @@ class BreezeClient:
         self.logger = logger or logging.getLogger(__name__)
         self.session: aiohttp.ClientSession | None = None
         self.closed = False
+        self.cpp = CppAPI(self)
 
     async def start(self) -> None:
         """Acquire the plugin-owned HTTP session in the running event loop."""
@@ -53,6 +55,7 @@ class BreezeClient:
         raw: bool = False,
         request_id: str = "",
         max_json_bytes: int = 2 * 1024 * 1024,
+        optional: bool = False,
         **kwargs,
     ):
         """Perform one bounded request with secret-safe error translation.
@@ -64,6 +67,7 @@ class BreezeClient:
             raw: Return audio bytes and response headers instead of JSON.
             request_id: Correlation identifier inherited from synthesis when available.
             max_json_bytes: Size limit for JSON, including embedded preview audio.
+            optional: Return None for an absent optional endpoint (HTTP 404) only.
             **kwargs: JSON, multipart data, and query parameters.
 
         Returns:
@@ -95,6 +99,12 @@ class BreezeClient:
                 allow_redirects=False,
                 **kwargs,
             ) as response:
+                if optional and response.status == 404:
+                    self.logger.debug(
+                        "Breeze optional endpoint is unavailable (request_id=%s).",
+                        request_id,
+                    )
+                    return None
                 if not 200 <= response.status < 300:
                     messages = {
                         401: "鉴权失败，请检查 API Key；本地无鉴权服务可留空。",
@@ -169,6 +179,10 @@ class BreezeClient:
         request_id = (parent + "." if parent else "") + uuid.uuid4().hex[:8]
         if config["backend"] == "local":
             connection = config["local"]
+            if connection["implementation"] == "cpp":
+                return await self.cpp.synthesize(
+                    connection, text, reference, request_id
+                )
             if not connection["instruction"].strip() and connection["cfg_scale"] != 1:
                 raise BreezeError(
                     "普通朗读与纯音色复刻请将 CFG 设为 1；使用更高 CFG 时请填写声音或语气描述。"

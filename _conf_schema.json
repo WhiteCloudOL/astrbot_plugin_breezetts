@@ -15,10 +15,20 @@
     "description": "本地 API",
     "hint": "兼容开源服务及启用 Bearer 鉴权的部署。",
     "items": {
+      "implementation": {
+        "type": "string",
+        "description": "服务端实现",
+        "default": "python",
+        "hint": "python 保持原 API；cpp 兼容 HoppouAI 原项目及 WhiteCloudOL 鉴权/FIFO fork。",
+        "options": [
+          "python",
+          "cpp"
+        ]
+      },
       "base_url": {
         "type": "string",
         "description": "服务地址",
-        "hint": "支持根地址或 /v1，保留反向代理路径前缀。",
+        "hint": "支持根地址、/v1 或完整合成地址。C++ 原版示例 http://127.0.0.1:8080/v1；鉴权 fork 示例 http://127.0.0.1:7863/v1。",
         "default": "http://127.0.0.1:7860"
       },
       "api_key": {
@@ -31,12 +41,13 @@
       "mode": {
         "type": "string",
         "description": "合成模式",
-        "hint": "reference 需要参考录音和准确文字稿；design 需要声音描述。",
+        "hint": "reference 使用插件录音；voice 使用 C++ 服务端音色 ID；design 使用声音描述；plain 普通朗读。",
         "default": "reference",
         "options": [
           "reference",
           "design",
-          "plain"
+          "plain",
+          "voice"
         ]
       },
       "reference_id": {
@@ -68,6 +79,59 @@
         "description": "固定种子",
         "hint": "关闭随机种子后生效；同样输入与种子有助于复现声音效果",
         "default": 42
+      },
+      "voice_id": {
+        "type": "string",
+        "description": "服务端音色 ID",
+        "default": "",
+        "hint": "服务端音色库中的完整 ID，缓存或持久音色均可。"
+      },
+      "output_format": {
+        "type": "string",
+        "description": "C++ 工作台单段输出格式",
+        "default": "pcm",
+        "hint": "PCM 自动封装 WAV；MP3 不可用时服务端返回 WAV。聊天和多段合成统一无损输出。",
+        "options": [
+          "pcm",
+          "wav",
+          "mp3"
+        ]
+      },
+      "temperature": {
+        "type": "float",
+        "description": "C++ Temperature",
+        "default": 0.0,
+        "hint": "仅 C++ 服务端生效；0 跟随模型默认采样设置。"
+      },
+      "top_k": {
+        "type": "int",
+        "description": "C++ Top K",
+        "default": 0,
+        "hint": "仅 C++ 服务端生效；0 跟随模型默认采样设置。"
+      },
+      "top_p": {
+        "type": "float",
+        "description": "C++ Top P",
+        "default": 0.0,
+        "hint": "仅 C++ 服务端生效；0 跟随模型默认采样设置。"
+      },
+      "repetition_penalty": {
+        "type": "float",
+        "description": "C++ 重复惩罚",
+        "default": 0.0,
+        "hint": "仅 C++ 服务端生效；0 跟随模型默认采样设置。"
+      },
+      "split_chars": {
+        "type": "int",
+        "description": "C++ 长文本分段字符数",
+        "default": -1,
+        "hint": "-1 跟随服务端，0 关闭分段；长文本建议保持分段。"
+      },
+      "max_new_tokens": {
+        "type": "int",
+        "description": "C++ 每段最大帧数",
+        "default": 0,
+        "hint": "0 跟随服务端，通常 750 帧；每秒约 12.5 帧。"
       }
     }
   },

@@ -123,3 +123,34 @@ Prefer one overall tone for short replies. Avoid multi-step scripts, repeated br
 For LLM prefix caching, fixed templates, platform rules and tags remain in a stable system message; changing context and dialogue follow in a user message. Put custom `{user_message}` and `{passage}` variables last: the first dynamic variable and the remainder of the template move into the user message. Both values are already supplied separately by default. Tool definitions stay stable across probability decisions. Success logs include the provider's `reported_cached_tokens` count, or `None` when unavailable; actual cache hits depend on the LLM service.
 
 The default adaptation template requires strictly one JSON object without Markdown, code fences or explanations. For input dialogue `你好呀。`, a valid example is `{"text":"你好呀。","instruction":""}`. Use the actual input dialogue rather than copying the example; `{}` is also valid for natural narration.
+
+## Breeze-TTS-2.cpp HTTP features
+
+Under **Connection & Settings → Local API → Server implementation**, select **Breeze-TTS-2.cpp (including the authentication/FIFO fork)** and save. Existing configurations keep the Python API choice.
+
+| Server | Example BaseURL | Authentication and scheduling |
+| --- | --- | --- |
+| [HoppouAI upstream](https://github.com/HoppouAI/Breeze-TTS-2.cpp) | `http://127.0.0.1:8080/v1` | Optional key according to deployment; older builds may omit queue status |
+| [WhiteCloudOL fork](https://github.com/WhiteCloudOL/Breeze-TTS-2.cpp) | `http://127.0.0.1:7863/v1` | Bearer key and FIFO waiting |
+
+Root URLs, `/v1`, full speech endpoints and reverse-proxy prefixes remain supported. The plugin checks `/health`, then reads `/v1/model` and optional `/v1/queue`. Only an absent optional endpoint (404) is treated as unavailable; authentication failures, timeouts and malformed data remain errors.
+
+The **Voices & Recordings** navigation entry is unchanged. With C++ selected, **Local Reference Voices** becomes **Local & Server Voices**: the original reference-recording section remains below the new server catalog. Refresh, select a full server ID, or register a plugin reference with its exact transcript. A blank name creates memory-only cache; a name of 1–64 ASCII letters, digits, dashes or underscores saves a `.breeze` file and can overwrite the same name. Unknown IDs fail explicitly rather than falling back to a different voice.
+
+The editor supports descriptions (up to 4096 UTF-8 bytes) and up to 32 string metadata fields (64-character ASCII names using letters, digits, dot, dash or underscore; values up to 1024 bytes). Remove a key or set it to `null` to delete it. Change the selected voice before unloading it. **Unload from memory** keeps saved files, which return after restart; it is not permanent file deletion.
+
+![C++ server catalog](../images/voices-cpp-desktop.png)
+![Mobile server catalog](../images/voices-cpp-mobile.png)
+![Server voice editor](../images/server-voice-dialog-desktop.png)
+![Mobile voice editor](../images/server-voice-dialog-mobile.png)
+
+C++ sampling options include Temperature, Top K, Top P and repetition penalty; zero uses model defaults. Split length `-1` uses the server setting, while `0` disables splitting. Maximum frames `0` uses the server default, with approximately 12.5 frames per second. Keep splitting enabled for long text. Single-section workbench output can be PCM, WAV or MP3; WAV/MP3 uses the JSON audio endpoint and registers uploaded references as memory cache when needed. WAV fallback is accepted when MP3 encoding is unavailable, and unknown-length streaming WAV headers are repaired after EOF. Chat delivery and multi-section tone changes always use lossless PCM/WAV without changing saved format preferences.
+
+![C++ connection and sampling](../images/settings-cpp-desktop.png)
+
+**Voice Conversion (C++)** is added under **Synthesis & Audition**. Upload/select a source recording and choose a server voice or a target reference with its exact transcript. Source transcripts are optional. WAV, MP3, FLAC and OGG uploads retain the existing normalization and size/duration limits. Conversion has independent Temperature, Top K, CFG, seed and acoustic-codebook controls: use zero retained codebooks for speech and optionally try 1–2 for singing. Results appear in Recent Generations for playback/download; conversion does not change the chat voice.
+
+![Voice conversion](../images/conversion-cpp-desktop.png)
+![Mobile voice conversion](../images/conversion-cpp-mobile.png)
+
+Synthesis, voice registration and conversion use polled jobs with cancellation. Cancellation closes the request; the fork removes disconnected waiters, while stopping an active generation depends on the server. Timeouts include plugin/server queueing and generation. Busy or failed requests are not retried automatically. WebSocket incremental text, live interruption and voice calls are outside this HTTP integration.

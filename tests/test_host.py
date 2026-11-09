@@ -91,7 +91,7 @@ async def test_load_reload_and_resources(loaded_plugin):
     current = context.get_registered_star(metadata.name)
     assert current.star_cls is not first
     assert session.closed
-    assert len(context.registered_web_apis) == 12
+    assert len(context.registered_web_apis) == 16
     assert not current.star_cls.service.client.session.closed
     from astrbot.core.star.star_handler import star_handlers_registry
 
@@ -133,7 +133,7 @@ async def test_reload_upgrades_saved_behavior_settings(loaded_plugin):
     saved = json.loads(config_path.read_text(encoding="utf-8-sig"))
     assert saved["behavior"]["group_trigger_probability"] == 10
     assert saved["local"]["api_key"] == "upgrade-test-local-key"
-    assert len(context.registered_web_apis) == 12
+    assert len(context.registered_web_apis) == 16
 
     ok, error = await manager.reload(metadata.name)
     assert ok, error
@@ -423,8 +423,75 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
     created_previews = []
     manual_tts_calls = []
     voice_catalog_calls = []
+    cpp_forms = []
+    cpp_voices = {
+        name: {
+            "id": name,
+            "frames": 50,
+            "seconds": 4,
+            "encode_ms": 12,
+            "saved": saved,
+            "ref_text": "参考文字。",
+            "description": "服务端旁白",
+            "metadata": {"accent": "zh"},
+        }
+        for name, saved in (("cpp_saved", True), ("cpp_cached", False))
+    }
 
     async def upstream(request):
+        if request.path.startswith("/cpp/"):
+            assert request.headers.get("Authorization") == "Bearer cpp-ui-key"
+            if request.path.endswith("/health"):
+                return web.json_response({"status": "ok", "sample_rate": 24000})
+            if request.path.endswith("/model"):
+                return web.json_response(
+                    {"model": "breeze-tts-2", "backend": "CUDA0", "sample_rate": 24000}
+                )
+            if request.path.endswith("/queue"):
+                return web.json_response({"active": 1, "waiting": 2, "capacity": 1})
+            if request.path.endswith("/voices"):
+                if request.method == "GET":
+                    return web.json_response(list(cpp_voices.values()))
+                fields = await request.post()
+                name = fields.get("name", "cpp_registered")
+                cpp_voices[name] = {
+                    "id": name,
+                    "frames": 50,
+                    "seconds": 4,
+                    "encode_ms": 5,
+                    "saved": bool(fields.get("name")),
+                    "ref_text": fields["ref_text"],
+                    "description": fields.get("description", ""),
+                    "metadata": json.loads(fields.get("metadata", "{}")),
+                }
+                return web.json_response(cpp_voices[name])
+            if "/voices/" in request.path:
+                name = request.path.rsplit("/", 1)[1]
+                if request.method == "DELETE":
+                    removed = cpp_voices.pop(name)
+                    return web.json_response(
+                        {"deleted": name, "file_kept": removed["saved"]}
+                    )
+                fields = await request.json()
+                cpp_voices[name]["description"] = fields["description"]
+                for key, value in fields["metadata"].items():
+                    if value is None:
+                        cpp_voices[name]["metadata"].pop(key, None)
+                    else:
+                        cpp_voices[name]["metadata"][key] = value
+                return web.json_response(cpp_voices[name])
+            if request.content_type == "application/json":
+                cpp_forms.append(await request.json())
+                streamed = (
+                    wav_audio[:4]
+                    + b"\xff" * 4
+                    + wav_audio[8:40]
+                    + b"\xff" * 4
+                    + wav_audio[44:]
+                )
+                return web.Response(body=streamed, content_type="audio/wav")
+            cpp_forms.append(dict(await request.post()))
+            return web.Response(body=wav_audio[44:], content_type="audio/pcm")
         if request.path.endswith("/models"):
             return web.json_response([{"model_id": "breeze-tts-2"}])
         if request.path.endswith("/voices"):
@@ -678,7 +745,7 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             )
             screenshot_dir.mkdir(parents=True, exist_ok=True)
 
-            async def capture_view(filename):
+            async def capture_view(filename, selector=None):
                 height = await page.frames[1].evaluate(
                     "document.documentElement.scrollHeight"
                 )
@@ -687,9 +754,14 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
                     height,
                 )
                 try:
-                    await page.screenshot(
-                        path=str(screenshot_dir / filename), full_page=True
-                    )
+                    if selector:
+                        await frame.locator(selector).screenshot(
+                            path=str(screenshot_dir / filename)
+                        )
+                    else:
+                        await page.screenshot(
+                            path=str(screenshot_dir / filename), full_page=True
+                        )
                 finally:
                     await page.evaluate(
                         "document.querySelector('iframe').style.height = '100vh'"
@@ -1230,6 +1302,107 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await page.set_viewport_size({"width": 1440, "height": 1040})
             await capture_view("voices-local-desktop.png")
             await frame.locator('[data-page="studio"]').click()
+            await page.set_viewport_size({"width": 1440, "height": 1040})
+            reference = await plugin.service.io(
+                plugin.service.store.upload, wav_audio, "cpp-reference.wav"
+            )
+            plugin.service.store.items[reference["id"]]["ref_text"] = "参考文字。"
+            await plugin.service.io(plugin.service.store.persist)
+            await page.reload()
+            await frame.locator('[data-page="settings"]').click()
+            await frame.locator("#backend").select_option("local")
+            await frame.locator("#local-implementation").select_option("cpp")
+            await frame.locator("#local-url").fill(base_url + "/cpp/v1")
+            await frame.locator("#local-key").fill("cpp-ui-key")
+            await frame.locator("#local-reference").select_option(reference["id"])
+            await frame.locator("#local-temperature").fill("0.65")
+            await frame.locator("#local-format").select_option("mp3")
+            await frame.locator("#save").click()
+            await expect(frame.locator("#save-state")).to_have_text("配置已保存")
+            await frame.locator("#refresh-local-status").click()
+            await expect(frame.locator("#local-server-status")).to_contain_text("CUDA0")
+            await expect(frame.locator("#local-server-status")).to_contain_text(
+                "等待 2 条"
+            )
+            await capture_view("settings-cpp-desktop.png")
+            await frame.locator('[data-page="voices"]').click()
+            await frame.locator("#refresh-server-voices").click()
+            saved_card = frame.locator('[data-server-voice-id="cpp_saved"]')
+            await saved_card.get_by_role(
+                "button", name="使用此音色", exact=True
+            ).click()
+            await expect(
+                saved_card.get_by_role("button", name="当前音色 ✓")
+            ).to_be_disabled()
+            await saved_card.get_by_role("button", name="编辑描述与元数据").click()
+            await frame.locator("#server-voice-description").fill(
+                "<img src=x onerror=alert(1)>"
+            )
+            await frame.locator("#server-voice-metadata").fill('{"source":"test"}')
+            await frame.locator("#save-server-voice").click()
+            await expect(frame.locator("#server-voice-dialog")).not_to_be_visible()
+            assert cpp_voices["cpp_saved"]["metadata"] == {"source": "test"}
+            await expect(saved_card.locator("p")).to_have_text(
+                "<img src=x onerror=alert(1)>"
+            )
+            await (
+                frame.locator('[data-server-voice-id="cpp_cached"]')
+                .get_by_role("button", name="使用此音色", exact=True)
+                .click()
+            )
+            await saved_card.get_by_role("button", name="移出内存").click()
+            await expect(frame.locator("#server-delete-message")).to_contain_text(
+                "文件会保留"
+            )
+            await frame.locator("#confirm-server-delete").click()
+            await expect(saved_card).to_have_count(0)
+            await frame.locator("#register-server-voice").click()
+            await frame.locator("#server-register-reference").select_option(
+                reference["id"]
+            )
+            await frame.locator("#server-register-name").fill("new_cpp_voice")
+            await frame.locator("#server-voice-description").fill("新注册的测试音色")
+            await frame.locator("#server-voice-dialog").screenshot(
+                path=str(screenshot_dir / "server-voice-dialog-desktop.png")
+            )
+            await page.set_viewport_size({"width": 390, "height": 844})
+            assert await frame.locator("#server-voice-dialog").evaluate(
+                "dialog => dialog.scrollWidth <= dialog.clientWidth"
+            )
+            await frame.locator("#server-voice-dialog").screenshot(
+                path=str(screenshot_dir / "server-voice-dialog-mobile.png")
+            )
+            await page.set_viewport_size({"width": 1440, "height": 1040})
+            await frame.locator("#save-server-voice").click()
+            await expect(frame.locator("#server-voice-dialog")).not_to_be_visible()
+            await expect(
+                frame.locator('[data-server-voice-id="new_cpp_voice"]')
+            ).to_have_count(1)
+            await capture_view("voices-cpp-desktop.png")
+            await page.set_viewport_size({"width": 390, "height": 844})
+            await capture_view("voices-cpp-mobile.png")
+            await page.set_viewport_size({"width": 1440, "height": 1040})
+            await frame.locator('[data-page="studio"]').click()
+            await frame.locator("#synthesis-text").fill("C++ 工作台合成测试。")
+            await frame.locator("#synthesize").click()
+            await expect(frame.locator("#history .audio-row").first).to_contain_text(
+                "C++ 工作台合成测试。"
+            )
+            await expect(frame.locator("#player-state")).to_have_text("4.0 秒")
+            assert (
+                cpp_forms[-1]["voice"] == "cpp_cached"
+                and cpp_forms[-1]["temperature"] == 0.65
+            )
+            await frame.locator("#conversion-source").select_option(reference["id"])
+            await frame.locator("#conversion-voice").fill("new_cpp_voice")
+            await frame.locator("#convert-audio").click()
+            await expect(frame.locator("#conversion-status")).to_have_text(
+                "转换完成，音频已保存。"
+            )
+            assert cpp_forms[-1]["voice_id"] == "new_cpp_voice"
+            await capture_view("conversion-cpp-desktop.png", "#conversion-panel")
+            await page.set_viewport_size({"width": 390, "height": 844})
+            await capture_view("conversion-cpp-mobile.png", "#conversion-panel")
             await page.set_viewport_size({"width": 1440, "height": 1040})
             await page.evaluate(
                 "document.querySelector('iframe').contentWindow.postMessage({channel:'astrbot-plugin-page',kind:'context',context:{isDark:true}}, '*')"
