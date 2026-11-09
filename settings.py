@@ -53,10 +53,19 @@ PROMPT_VARIABLES = {
 DEFAULTS = {
     "backend": "local",
     "local": {
+        "implementation": "python",
         "base_url": "http://127.0.0.1:7860",
         "api_key": "",
         "mode": "reference",
         "reference_id": "",
+        "voice_id": "",
+        "output_format": "pcm",
+        "temperature": 0.0,
+        "top_k": 0,
+        "top_p": 0.0,
+        "repetition_penalty": 0.0,
+        "split_chars": -1,
+        "max_new_tokens": 0,
         "instruction": "",
         "cfg_scale": 1.0,
         "random_seed": True,
@@ -312,6 +321,9 @@ def validate_config(value: dict) -> dict:
             elif not 1 <= len(line) <= 100 or any(c in line for c in "[]<>()`"):
                 raise BreezeError("每行填写一个平台实际支持的情绪值，不能包含标记。")
     local, cloud = result["local"], result["cloud"]
+    local["voice_id"] = re.sub(
+        r"^[\s\u200b\ufeff]+|[\s\u200b\ufeff]+$", "", local["voice_id"]
+    )
     # Clipboard padding is not part of the opaque ID; never infer a required prefix.
     cloud["voice_id"] = re.sub(
         r"^[\s\u200b\ufeff]+|[\s\u200b\ufeff]+$", "", cloud["voice_id"]
@@ -339,8 +351,18 @@ def validate_config(value: dict) -> dict:
             raise BreezeError(
                 f"{name} 须为不超过 6000 字符的提示词，不能包含无效控制字符。"
             )
-    if local["mode"] not in {"reference", "design", "plain"}:
-        raise BreezeError("本地模式须为参考音色、声音设计或普通朗读。")
+    if local["implementation"] not in {"python", "cpp"}:
+        raise BreezeError("本地服务端须选择 Python API 或 Breeze-TTS-2.cpp。")
+    if local["mode"] not in {"reference", "design", "plain", "voice"}:
+        raise BreezeError("本地合成模式无效。")
+    if local["mode"] == "voice" and local["implementation"] != "cpp":
+        raise BreezeError("服务端音色模式需要 Breeze-TTS-2.cpp。")
+    if local["voice_id"] and not re.fullmatch(
+        r"[A-Za-z0-9_-]{1,64}", local["voice_id"]
+    ):
+        raise BreezeError("服务端音色 ID 须为 1–64 个字母、数字、短横线或下划线。")
+    if local["output_format"] not in {"pcm", "wav", "mp3"}:
+        raise BreezeError("C++ 输出格式须为 PCM、WAV 或 MP3。")
     if cloud["output_format"] not in FORMATS or cloud["delivery"] not in {
         "sync",
         "async",
@@ -352,6 +374,12 @@ def validate_config(value: dict) -> dict:
     ranges = [
         ("local", "cfg_scale", 0.01, 10),
         ("local", "seed", 0, 2**32 - 1),
+        ("local", "temperature", 0, 5),
+        ("local", "top_k", 0, 10000),
+        ("local", "top_p", 0, 1),
+        ("local", "repetition_penalty", 0, 5),
+        ("local", "split_chars", -1, 10000),
+        ("local", "max_new_tokens", 0, 15000),
         ("cloud", "guidance_scale", 1, 10),
         ("cloud", "speed", 0.5, 2),
         ("cloud", "volume", 0.01, 2),

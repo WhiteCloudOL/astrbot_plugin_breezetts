@@ -107,6 +107,70 @@ class WorkbenchAPI:
         return json_response(result)
 
     @web_errors
+    async def local_status(self):
+        """Read saved C++ connection, model, and optional queue status."""
+        config = self.service.settings()
+        if config["backend"] != "local" or config["local"]["implementation"] != "cpp":
+            raise BreezeError("请先选择并保存 Breeze-TTS-2.cpp 服务端。")
+        return json_response(await asyncio.wait_for(self.service.connection(), 30))
+
+    @web_errors
+    async def local_voices(self):
+        """Read the saved C++ server catalog or one voice."""
+        config = self.service.settings()
+        if config["backend"] != "local" or config["local"]["implementation"] != "cpp":
+            raise BreezeError("请先选择并保存 Breeze-TTS-2.cpp 服务端。")
+        return json_response(
+            await asyncio.wait_for(
+                self.service.client.cpp.voices(
+                    config["local"], request.query.get("id", "")
+                ),
+                30,
+            )
+        )
+
+    @web_errors
+    async def local_voice(self):
+        """Edit or unload a server voice; registration uses the job queue."""
+        payload = await request.json(default={})
+        if (
+            not isinstance(payload, dict)
+            or not isinstance(payload.get("operation"), str)
+            or payload.get("operation")
+            not in {
+                "edit",
+                "remove",
+            }
+        ):
+            raise BreezeError(
+                "音色操作须为 edit 或 remove。注册音色请提交 local_voice 任务。"
+            )
+        return json_response(
+            await asyncio.wait_for(
+                self.service.local_voice(payload["operation"], payload), 30
+            )
+        )
+
+    @web_errors
+    async def cancel_job(self):
+        """Cancel one plugin-owned job and close any queued upstream request."""
+        payload = await request.json(default={})
+        if not isinstance(payload, dict) or not isinstance(payload.get("id"), str):
+            raise BreezeError("取消任务需要有效的任务 ID。")
+        identifier = payload["id"]
+        if identifier not in self.service.jobs:
+            raise BreezeError("任务已过期。")
+        task = self.service.tasks.get(identifier)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if self.service.jobs[identifier]["status"] == "running":
+                self.service.jobs[identifier].update(
+                    status="cancelled", error="任务已取消。"
+                )
+        return json_response(dict(self.service.jobs[identifier]))
+
+    @web_errors
     async def submit(self):
         """Start a synthesis, clone, or design job without blocking the bridge."""
         payload = await request.json(default={})

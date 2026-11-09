@@ -43,6 +43,24 @@ def playable_audio(data: bytes, fmt: str, rate: int = 24000) -> tuple[bytes, str
     if not data or len(data) > AUDIO_LIMIT:
         raise BreezeError("音频为空或超过 64 MiB 上限。")
     extension = fmt.split("_")[0]
+    # C++ streaming WAV uses unknown sizes; fix only its documented PCM header after EOF.
+    if (
+        extension == "wav"
+        and data[:8] == b"RIFF\xff\xff\xff\xff"
+        and data[36:44] == b"data\xff\xff\xff\xff"
+    ):
+        if data[8:16] != b"WAVEfmt " or data[20:22] != b"\x01\x00":
+            raise BreezeError("服务返回的流式 WAV 头无效。")
+        stride = int.from_bytes(data[32:34], "little")
+        if not stride or (len(data) - 44) % stride:
+            raise BreezeError("服务返回的流式 WAV 采样不完整。")
+        data = (
+            data[:4]
+            + (len(data) - 8).to_bytes(4, "little")
+            + data[8:40]
+            + (len(data) - 44).to_bytes(4, "little")
+            + data[44:]
+        )
     if extension == "pcm":
         if len(data) % 2 or not 8000 <= rate <= 48000:
             raise BreezeError("PCM 数据不完整或采样率无效。")

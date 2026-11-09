@@ -17,6 +17,12 @@ let settingsSaving = false;
 let editingPrompt;
 let expressionProfile;
 let editingExpression;
+let serverVoices = [];
+let serverCatalogKey = "";
+let editingServerVoice;
+let removingServerVoice;
+let uploadingSource = false;
+let localStatusKey = "";
 const clearKeys = new Set();
 const titles = {
   studio: "合成试听",
@@ -43,7 +49,7 @@ async function action(button, operation) {
   try {
     return await operation();
   } catch (error) {
-    notice(error.message || "操作失败，请稍后重试。", true);
+    notice(error.message || "操作失败，请稍后重试。", !error.cancelled);
   } finally {
     button.disabled = button.id === "save" ? settingsSaving || !dirty : wasDisabled;
     button.removeAttribute("aria-busy");
@@ -100,6 +106,19 @@ function updateSummary() {
   }
   const cloud = draft.backend === "cloud";
   const hosted = draft.backend === "provider";
+  const cpp = !hosted && !cloud && draft.local.implementation === "cpp";
+  $("cpp-settings").hidden = !cpp;
+  $("server-voices-panel").hidden = !cpp;
+  $("conversion-panel").hidden = !cpp;
+  $("local-mode").querySelector('[value="voice"]').disabled = draft.local.implementation !== "cpp";
+  $("local-server-voice").disabled = !cpp;
+  $("local-url").placeholder = cpp ? "http://127.0.0.1:8080/v1" : "http://127.0.0.1:7860";
+  if (`${draft.local.implementation}:${draft.local.base_url}` !== localStatusKey)
+    $("local-server-status").textContent = "服务地址或实现已变化，请保存后刷新模型与队列状态。";
+  if (`${draft.local.implementation}:${draft.local.base_url}` !== serverCatalogKey) {
+    serverVoices = [];
+    empty($("server-voices"), "服务地址或实现已切换，请刷新服务端音色。");
+  }
   const backendName = hosted ? "AstrBot TTS" : cloud ? "BreezeBlue 官方" : "本地 API";
   $("provider-settings").hidden = !hosted;
   fillExpression();
@@ -115,10 +134,10 @@ function updateSummary() {
   $("cloud-voices-panel").hidden = !cloud;
   $("voice-page-title").textContent = hosted ? "AstrBot 提供商音色" : cloud
     ? "BreezeBlue 官方音色"
-    : "本地参考音色";
+    : cpp ? "本地与服务端音色" : "本地参考音色";
   $("voice-page-hint").textContent = hosted ? "请在 AstrBot 的 TTS 提供商配置中调整音色和声音参数。" : cloud
     ? "查询账号音色，或创建克隆与设计音色"
-    : "上传录音、填写准确文字稿，再设为当前音色";
+    : cpp ? "管理服务端音色库，或使用插件中的参考录音" : "上传录音、填写准确文字稿，再设为当前音色";
 
   const reference = state.audio.find(
     (item) => item.id === draft.local.reference_id,
@@ -130,6 +149,7 @@ function updateSummary() {
     ? voice?.name || draft.cloud.voice_id || "尚未选择官方音色"
     : draft.local.mode === "reference"
       ? reference?.name || "尚未选择参考录音"
+      : draft.local.mode === "voice" ? draft.local.voice_id || "请选择服务端音色"
       : draft.local.mode === "design"
         ? "文字声音设计"
         : "普通朗读";
@@ -139,10 +159,11 @@ function updateSummary() {
       ? reference?.ref_text
         ? "参考录音与文字稿已配对。"
         : "请在音色库编辑录音，填写准确文字稿。"
+      : draft.local.mode === "voice" ? "使用服务端已编码音色；缓存音色重启后需重新注册。"
       : "在连接与设置中调整声音描述和 CFG。";
   $("synthesis-hint").textContent = hosted ? "复用 AstrBot TTS · PCM WAV" : cloud
     ? `官方输出 · ${draft.cloud.output_format.toUpperCase()} · ${draft.cloud.delivery}`
-    : "本地 PCM 自动封装为 WAV";
+    : cpp ? `C++ · ${draft.local.output_format.toUpperCase()} · 完整接收后试听` : "本地 PCM 自动封装为 WAV";
   $("text-count").textContent =
     `${Array.from($("synthesis-text").value).length} / ${draft.behavior.max_characters}`;
 }
@@ -255,7 +276,7 @@ function empty(target, text) {
 function renderAudio() {
   const references = state.audio.filter((item) => item.kind === "reference");
   $("reference-count").textContent = references.length;
-  for (const id of ["local-reference", "clone-reference"]) {
+  for (const id of ["local-reference", "clone-reference", "server-register-reference", "conversion-source", "conversion-reference"]) {
     const select = $(id);
     const oldValue =
       id === "local-reference" ? draft.local.reference_id : select.value;
@@ -352,7 +373,7 @@ function renderAudio() {
     title.textContent = item.name;
     const meta = document.createElement("span");
     meta.className = "audio-meta";
-    meta.textContent = `${item.kind === "preview" ? "音色预览" : item.backend === "provider" ? "AstrBot TTS" : item.backend === "cloud" ? "官方合成" : "本地合成"} · ${item.extension.toUpperCase()} · ${(item.size / 1024).toFixed(0)} KiB · ${new Date(item.created * 1000).toLocaleString()}`;
+    meta.textContent = `${item.kind === "preview" ? "音色预览" : item.conversion ? "语音转换" : item.backend === "provider" ? "AstrBot TTS" : item.backend === "cloud" ? "官方合成" : "本地合成"} · ${item.extension.toUpperCase()} · ${(item.size / 1024).toFixed(0)} KiB · ${new Date(item.created * 1000).toLocaleString()}`;
     info.append(title, meta);
     const controls = document.createElement("div");
     controls.className = "audio-actions";
@@ -449,17 +470,36 @@ async function play(item, { autoplay = true } = {}) {
   }
 }
 
-async function runJob(operation, payload, onProgress) {
+async function runJob(operation, payload, onProgress, cancelControl) {
   const job = await bridge.apiPost("jobs/submit", { operation, payload });
+  if (cancelControl) {
+    cancelControl.dataset.jobId = job.id;
+    cancelControl.hidden = false;
+    cancelControl.onclick = () => action(cancelControl, async () => {
+      await bridge.apiPost("jobs/cancel", {id: job.id});
+      notice("任务已取消。");
+    });
+  }
+  try {
   while (!disposed) {
     const result = await bridge.apiGet("jobs/status", { id: job.id });
     if (result.status === "ready") return result.result;
-    if (result.status !== "running")
-      throw new Error(result.error || "任务未完成。");
+    if (result.status !== "running") {
+      const error = new Error(result.error || "任务未完成。");
+      error.cancelled = result.status === "cancelled";
+      throw error;
+    }
     if (onProgress) onProgress();
     await new Promise((resolve) => setTimeout(resolve, 900));
   }
   throw new Error("页面已关闭。");
+  } finally {
+    if (cancelControl?.dataset.jobId === job.id) {
+      cancelControl.hidden = true;
+      cancelControl.onclick = null;
+      delete cancelControl.dataset.jobId;
+    }
+  }
 }
 
 async function loadVoices(more = false) {
@@ -828,7 +868,7 @@ $("synthesize").addEventListener("click", () =>
       const item = await runJob("synthesize", { text }, () => {
         $("job-status").textContent =
           `正在排队或合成 · 已等待 ${Math.floor((Date.now() - started) / 1000)} 秒`;
-      });
+      }, $("cancel-synthesis"));
       await refreshAudio();
       await play(item);
       notice("语音已生成并保存。");
@@ -849,7 +889,10 @@ $("upload").addEventListener("change", async () => {
   try {
     const item = await bridge.upload("audio/upload", file);
     await refreshAudio();
-    if (draft.backend === "cloud") {
+    if (uploadingSource) {
+      $("conversion-source").value = item.id;
+      notice("源录音已上传，可直接进行语音转换，无需填写参考文字稿。");
+    } else if (draft.backend === "cloud") {
       $("clone-reference").value = item.id;
       notice("克隆录音已上传，填写名称和语言即可生成预览");
     } else {
@@ -864,6 +907,7 @@ $("upload").addEventListener("change", async () => {
   } finally {
     $("upload").disabled = false;
     $("upload").value = "";
+    uploadingSource = false;
   }
 });
 $("reference-form").addEventListener("submit", (event) => {
@@ -995,6 +1039,154 @@ $("save-preview").addEventListener("click", () =>
     notice("音色已保存并设为当前官方音色。");
   }),
 );
+async function loadServerVoices() {
+  if (dirty) await saveSettings();
+  if (draft.backend !== "local" || draft.local.implementation !== "cpp") throw new Error("请先选择并保存 C++ 服务端。");
+  const key = `${draft.local.implementation}:${draft.local.base_url}`;
+  const voices = await bridge.apiGet("local/voices");
+  if (`${draft.local.implementation}:${draft.local.base_url}` !== key || draft.backend !== "local") return;
+  serverVoices = voices;
+  serverCatalogKey = key;
+  $("server-voices").replaceChildren();
+  if (!voices.length) empty($("server-voices"), "服务端暂无音色，可用插件参考录音注册缓存或持久音色。");
+  for (const voice of voices) {
+    const card = document.createElement("article");
+    card.className = "voice-card";
+    card.dataset.serverVoiceId = voice.id;
+    const title = document.createElement("strong");
+    title.textContent = voice.id;
+    const meta = document.createElement("small");
+    meta.textContent = `${voice.saved ? "持久音色" : "内存缓存"} · ${voice.seconds} 秒 · 编码 ${voice.encode_ms} ms`;
+    const description = document.createElement("p");
+    description.textContent = voice.description || voice.ref_text || "未填写音色描述";
+    const use = button("使用此音色", async () => {
+      draft.local.voice_id = voice.id;
+      draft.local.mode = "voice";
+      $("conversion-voice").value = voice.id;
+      markDirty();
+      await saveSettings();
+      await loadServerVoices();
+      notice("已使用服务端音色，无需反复上传参考录音。");
+    }, "primary");
+    const selected = draft.local.mode === "voice" && draft.local.voice_id === voice.id;
+    use.disabled = selected;
+    if (selected) { use.textContent = "当前音色 ✓"; card.classList.add("selected"); }
+    const edit = button("编辑描述与元数据", async () => {
+      editingServerVoice = {...voice, server_url: draft.local.base_url};
+      $("server-voice-title").textContent = `编辑音色 · ${voice.id}`;
+      $("server-register-fields").hidden = true;
+      $("server-voice-description").value = voice.description;
+      $("server-voice-metadata").value = JSON.stringify(voice.metadata, null, 2);
+      $("server-voice-progress").textContent = "保存会更新服务端音色信息；持久音色同时写回文件。";
+      $("server-voice-dialog").showModal();
+    }, "secondary");
+    const remove = button("移出内存", async () => {
+      removingServerVoice = {...voice, server_url: draft.local.base_url};
+      $("server-delete-message").textContent = `确认将“${voice.id}”移出服务端内存？${voice.saved ? "服务端文件会保留，重启后会重新加载；本操作不永久删除音色文件。" : "需要时可再次用参考录音注册缓存。"}`;
+      $("server-delete-dialog").showModal();
+    }, "danger-text");
+    remove.disabled = selected;
+    card.append(title, meta, description, use, edit, remove);
+    $("server-voices").append(card);
+  }
+}
+$("refresh-server-voices").addEventListener("click", () => action($("refresh-server-voices"), loadServerVoices));
+$("register-server-voice").addEventListener("click", () => action($("register-server-voice"), async () => {
+  if (dirty) await saveSettings();
+  editingServerVoice = {server_url: draft.local.base_url};
+  $("server-voice-title").textContent = "注册服务端音色";
+  $("server-register-fields").hidden = false;
+  $("server-register-reference").value = draft.local.reference_id;
+  $("server-register-name").value = "";
+  $("server-voice-description").value = "";
+  $("server-voice-metadata").value = "{}";
+  $("server-voice-progress").textContent = "参考录音编码可能排队，请等待任务完成。";
+  $("server-voice-dialog").showModal();
+}));
+$("server-voice-form").addEventListener("submit", event => {
+  event.preventDefault();
+  action(event.submitter, async () => {
+    try {
+    const target = editingServerVoice;
+    const decoded = JSON.parse($("server-voice-metadata").value || "{}");
+    if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) throw new Error("元数据须为 JSON 对象。");
+    const metadata = Object.assign(Object.create(null), decoded);
+    if (target.id) for (const key of Object.keys(target.metadata)) if (!(key in metadata)) metadata[key] = null;
+    const payload = {id: target.id, server_url: target.server_url, description: $("server-voice-description").value, metadata};
+    const fields = [...$("server-voice-form").querySelectorAll("input, select, textarea")];
+    fields.forEach(field => { field.disabled = true; });
+    $("cancel-server-voice").disabled = true;
+    $("server-voice-dialog").dataset.busy = "true";
+    try {
+    if (target.id) await bridge.apiPost("local/voice", {...payload, operation: "edit"});
+    else await runJob("local_voice", {...payload, operation: "register", reference_id: $("server-register-reference").value, name: $("server-register-name").value},
+      () => { $("server-voice-progress").textContent = "正在排队或编码参考音色……"; }, $("cancel-server-registration"));
+    if (editingServerVoice !== target) return;
+    $("server-voice-dialog").close();
+    if (draft.local.base_url === target.server_url && draft.backend === "local") await loadServerVoices();
+    notice("服务端音色信息已保存。");
+    } finally {
+      fields.forEach(field => { field.disabled = false; });
+      $("cancel-server-voice").disabled = false;
+      delete $("server-voice-dialog").dataset.busy;
+    }
+    } catch (error) {
+      $("server-voice-progress").textContent = error.message;
+      throw error;
+    }
+  });
+});
+$("server-voice-dialog").addEventListener("cancel", event => {
+  if ($("server-voice-dialog").dataset.busy) {
+    event.preventDefault();
+    $("server-voice-progress").textContent = "任务处理中，请等待完成或点击“取消任务”。";
+  }
+});
+$("cancel-server-voice").addEventListener("click", () => $("server-voice-dialog").close());
+$("cancel-server-delete").addEventListener("click", () => $("server-delete-dialog").close());
+$("confirm-server-delete").addEventListener("click", () => action($("confirm-server-delete"), async () => {
+  const target = removingServerVoice;
+  const result = await bridge.apiPost("local/voice", {operation: "remove", id: target.id, server_url: target.server_url});
+  $("server-delete-dialog").close();
+  if (draft.local.base_url === target.server_url) await loadServerVoices();
+  notice(result.file_kept ? "已移出内存，服务端音色文件仍保留。" : "已移出服务端内存缓存。");
+}));
+$("refresh-local-status").addEventListener("click", () => action($("refresh-local-status"), async () => {
+  if (dirty) await saveSettings();
+  const url = draft.local.base_url;
+  const result = await bridge.apiGet("local/status");
+  if (draft.local.base_url !== url) return;
+  localStatusKey = `${draft.local.implementation}:${url}`;
+  $("local-server-status").textContent = `${result.model ? `${result.model.model} · ${result.model.backend}` : "模型信息未提供"} · ${result.health.sample_rate} Hz · ${result.queue ? `占用 ${result.queue.active}/${result.queue.capacity} 槽位，等待 ${result.queue.waiting} 条` : "此服务未提供队列状态接口"}`;
+}));
+$("local-implementation").addEventListener("change", () => {
+  if (draft.local.implementation !== "cpp" && draft.local.mode === "voice") {
+    draft.local.mode = "reference";
+    $("local-mode").value = "reference";
+  }
+  $("local-server-status").textContent = "服务实现已切换，请保存后重新查询。";
+  markDirty();
+});
+$("upload-conversion-source").addEventListener("click", () => { uploadingSource = true; $("upload").click(); });
+$("upload").addEventListener("cancel", () => { uploadingSource = false; });
+$("conversion-panel").addEventListener("submit", event => {
+  event.preventDefault();
+  action($("convert-audio"), async () => {
+    if (dirty) await saveSettings();
+    const useVoice = $("conversion-target").value === "voice";
+    const item = await runJob("convert", {
+      source_id: $("conversion-source").value,
+      voice_id: useVoice ? $("conversion-voice").value.trim() : "",
+      reference_id: useVoice ? "" : $("conversion-reference").value,
+      text: $("conversion-text").value,
+      temperature: Number($("conversion-temperature").value), top_k: Number($("conversion-top-k").value),
+      cfg_scale: Number($("conversion-cfg").value), keep_acoustic: Number($("conversion-keep").value), seed: Number($("conversion-seed").value),
+    }, () => { $("conversion-status").textContent = "正在排队或转换……"; }, $("cancel-conversion"));
+    $("conversion-status").textContent = "转换完成，音频已保存。";
+    await refreshAudio();
+    await play(item);
+  });
+});
 window.addEventListener("beforeunload", () => {
   disposed = true;
   clearTimeout(noticeTimer);

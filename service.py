@@ -335,13 +335,20 @@ class BreezeService:
                 )
                 if not isinstance(health, dict) or health.get("status") != "ok":
                     raise BreezeError("本地服务尚未就绪，请检查服务状态。")
-                return {
+                result = {
                     "backend": "local",
                     "health": {
                         "status": "ok",
                         "sample_rate": health.get("sample_rate"),
                     },
                 }
+                if config["local"]["implementation"] == "cpp":
+                    result.update(
+                        await asyncio.wait_for(
+                            self.client.cpp.status(config["local"]), 20
+                        )
+                    )
+                return result
             models = await asyncio.wait_for(
                 self.client.request(config["cloud"], "GET", "models"), 20
             )
@@ -524,6 +531,8 @@ class BreezeService:
                         if backend == "cloud" and (for_delivery or len(sections) > 1):
                             # Chat delivery needs lossless samples before tail protection.
                             section_config["cloud"]["output_format"] = "wav"
+                        if backend == "local" and (for_delivery or len(sections) > 1):
+                            section_config["local"]["output_format"] = "pcm"
                         self.logger.debug(
                             "Breeze section synthesis (index=%s, total=%s, characters=%s, directed=%s).",
                             index + 1,
@@ -713,7 +722,8 @@ class BreezeService:
         await self.start()
         if (
             not isinstance(operation, str)
-            or operation not in {"synthesize", "clone", "design"}
+            or operation
+            not in {"synthesize", "clone", "design", "local_voice", "convert"}
             or not isinstance(payload, dict)
         ):
             raise BreezeError("任务类型或参数无效。")
@@ -733,6 +743,18 @@ class BreezeService:
             try:
                 if operation == "synthesize":
                     result = await self.synthesize(payload.get("text"), config=config)
+                elif operation == "local_voice":
+                    result = await asyncio.wait_for(
+                        self.local_voice(
+                            payload.get("operation", "register"), payload, config
+                        ),
+                        config["behavior"]["timeout"],
+                    )
+                elif operation == "convert":
+                    result = await asyncio.wait_for(
+                        self.convert_audio(payload, config),
+                        config["behavior"]["timeout"],
+                    )
                 else:
                     result = await asyncio.wait_for(
                         self.create_preview(operation, payload, config),
@@ -750,7 +772,7 @@ class BreezeService:
             except (TimeoutError, asyncio.TimeoutError):
                 self.jobs[job_id].update(
                     status="failed",
-                    error="任务超时，请检查官方控制台后再决定是否重新提交。",
+                    error="任务超时，请检查服务端队列或控制台后再决定是否重新提交。",
                 )
             except Exception as exc:
                 self.logger.error("Breeze job failed (%s).", type(exc).__name__)
@@ -764,6 +786,133 @@ class BreezeService:
             run(), name=f"breezetts-{operation}-{job_id}"
         )
         return {"id": job_id}
+
+    async def local_voice(
+        self, operation: str, payload: dict, config: dict | None = None
+    ) -> dict:
+        """Mutate the C++ voice library with an optional local reference recording.
+
+        Args:
+            operation: register, edit, or remove.
+            payload: Voice identity, reference ID, description, and metadata patch.
+            config: Optional submission-time configuration snapshot.
+
+        Returns:
+            The registered/updated voice or unload result.
+
+        Raises:
+            BreezeError: If the selected server, recording, or operation is invalid.
+        """
+        await self.start()
+        config = config or self.settings()
+        if config["backend"] != "local" or config["local"]["implementation"] != "cpp":
+            raise BreezeError("请先选择并保存 Breeze-TTS-2.cpp 服务端。")
+        if not isinstance(payload, dict):
+            raise BreezeError("服务端音色参数须为 JSON 对象。")
+        if (
+            payload.get("server_url", config["local"]["base_url"])
+            != config["local"]["base_url"]
+        ):
+            raise BreezeError("服务地址已变化，请刷新对应服务端的音色库后再操作。")
+        reference = None
+        if (
+            operation == "remove"
+            and config["local"]["mode"] == "voice"
+            and payload.get("id") == config["local"]["voice_id"]
+        ):
+            raise BreezeError("请先更换当前服务端音色，再移出该音色。")
+        if operation == "register":
+            async with self.lock:
+                assert self.store is not None
+                path = self.store.path(payload.get("reference_id"))
+                record = self.store.items[payload["reference_id"]]
+                if (
+                    record["kind"] != "reference"
+                    or not record.get("ref_text", "").strip()
+                ):
+                    raise BreezeError("请选择配有准确文字稿的参考录音。")
+                reference = (await self.io(path.read_bytes), record["ref_text"])
+        if operation == "register":
+            async with self.local_slot:
+                return await self.client.cpp.voice(
+                    config["local"], operation, payload, reference
+                )
+        return await self.client.cpp.voice(
+            config["local"], operation, payload, reference
+        )
+
+    async def convert_audio(self, payload: dict, config: dict | None = None) -> dict:
+        """Convert an uploaded recording and retain its bounded playable result.
+
+        Args:
+            payload: Source/target recording IDs and C++ conversion parameters.
+            config: Optional submission-time configuration snapshot.
+
+        Returns:
+            A locally stored converted WAV record.
+
+        Raises:
+            BreezeError: If inputs, upstream conversion, or output capacity is invalid.
+        """
+        await self.start()
+        config = config or self.settings()
+        if config["backend"] != "local" or config["local"]["implementation"] != "cpp":
+            raise BreezeError("语音转换需要 Breeze-TTS-2.cpp 服务端。")
+        if not isinstance(payload, dict):
+            raise BreezeError("语音转换参数须为 JSON 对象。")
+        reference = None
+        async with self.lock:
+            assert self.store is not None
+            path = self.store.path(payload.get("source_id"))
+            source = self.store.items[payload["source_id"]]
+            if source["kind"] != "reference":
+                raise BreezeError("请先上传需要转换的源录音。")
+            source_name = source["name"]
+            recording = await self.io(path.read_bytes)
+            if not payload.get("voice_id"):
+                path = self.store.path(payload.get("reference_id"))
+                target = self.store.items[payload["reference_id"]]
+                if (
+                    target["kind"] != "reference"
+                    or not target.get("ref_text", "").strip()
+                ):
+                    raise BreezeError("目标参考录音需要准确文字稿。")
+                reference = (await self.io(path.read_bytes), target["ref_text"])
+        conversion_id = uuid.uuid4().hex[:12]
+        async with self.slots, self.local_slot:
+            raw, extension = await self.client.cpp.convert(
+                config["local"], payload, recording, reference, request_id=conversion_id
+            )
+        async with self.lock:
+            assert self.store is not None
+            capacity = self.settings()["behavior"]["history_max_mb"] * 1024 * 1024
+            reserved = sum(
+                record["size"]
+                for key, record in self.store.items.items()
+                if max(self.delivery_audio.get(key, 0), self.reading_audio.get(key, 0))
+                > time.monotonic()
+            )
+            if len(raw) + reserved > capacity:
+                raise BreezeError("待发送音频已占满成品容量，请稍后重试。")
+            await self.prune_audio(
+                max(config["behavior"]["history_limit"] - 1, 0), reserve_bytes=len(raw)
+            )
+            item = await self.io(
+                self.store.add,
+                raw,
+                extension,
+                "output",
+                ("语音转换 · " + source_name)[:120],
+                backend="local",
+                conversion=True,
+            )
+            self.logger.info(
+                "Breeze C++ conversion completed (request_id=%s, audio_id=%s, bytes=%s).",
+                conversion_id,
+                item["id"],
+                len(raw),
+            )
+            return item
 
     async def create_preview(self, operation: str, payload: dict, config: dict) -> dict:
         """Create and retain an official preview for explicit audition and saving.

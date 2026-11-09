@@ -37,7 +37,7 @@
         <div class="sidebar-bottom">
           <span class="status-dot"></span
           ><span id="backend-label">本地 API</span
-          ><small>清蒸云鸭 · v1.5.3<br />AGPL-3.0</small>
+          ><small>清蒸云鸭 · v1.6.0<br />AGPL-3.0</small>
         </div>
       </aside>
       <main id="main-content" tabindex="-1">
@@ -99,6 +99,7 @@
                 role="status"
                 hidden
               ></div>
+              <button id="cancel-synthesis" class="text-button" type="button" hidden>取消当前合成</button>
             </div>
             <aside class="panel audition" aria-label="音频播放器">
               <span class="eyebrow">AUDIO PLAYER</span
@@ -132,6 +133,20 @@
               </p>
             </aside>
           </div>
+          <form id="conversion-panel" class="panel form-grid" hidden>
+            <div class="span-all"><h2>语音转换（C++）</h2><p>保留源录音内容与节奏，换成目标音色。源录音可不填写文字稿，填写准确稿可改善效果。</p></div>
+            <div><label for="conversion-source">源录音</label><select id="conversion-source"></select><button id="upload-conversion-source" class="text-button" type="button">上传源录音</button></div>
+            <div><label for="conversion-target">目标来源</label><select id="conversion-target"><option value="voice">服务端音色</option><option value="reference">插件参考录音</option></select></div>
+            <div><label for="conversion-voice">目标服务端音色 ID</label><input id="conversion-voice" maxlength="64" placeholder="选择音色后自动填写，也可手动输入" /></div>
+            <div><label for="conversion-reference">目标参考录音（需文字稿）</label><select id="conversion-reference"></select></div>
+            <div class="span-all"><label for="conversion-text">源录音文字稿（可选）</label><textarea id="conversion-text" rows="2" maxlength="16000"></textarea></div>
+            <div><label for="conversion-temperature">Temperature</label><input id="conversion-temperature" type="number" min="0" max="5" step="0.05" value="0.3" /></div>
+            <div><label for="conversion-top-k">Top K</label><input id="conversion-top-k" type="number" min="0" max="10000" step="1" value="1" /></div>
+            <div><label for="conversion-cfg">CFG</label><input id="conversion-cfg" type="number" min="0.01" max="10" step="0.01" value="1" /></div>
+            <div><label for="conversion-keep">保留源声学码本数</label><input id="conversion-keep" type="number" min="0" max="15" step="1" value="0" /><small>普通说话使用 0；演唱可尝试 1–2，更高值可能产生不稳定声音。</small></div>
+            <div><label for="conversion-seed">固定种子</label><input id="conversion-seed" type="number" min="0" max="4294967295" step="1" value="42" /></div>
+            <div class="span-all button-row"><button id="convert-audio" class="primary" type="submit">开始语音转换</button><button id="cancel-conversion" class="text-button" type="button" hidden>取消转换</button><span id="conversion-status" role="status"></span></div>
+          </form>
           <div class="section-heading">
             <div>
               <h2>最近生成</h2>
@@ -157,6 +172,13 @@
             class="visually-hidden"
           />
           <div id="local-voices-panel">
+            <div id="server-voices-panel" hidden>
+              <div class="section-heading"><div><h2>服务端音色库</h2><p>直接使用缓存或持久音色，合成时不再上传参考录音</p></div>
+                <div class="button-row"><button id="refresh-server-voices" class="secondary" type="button">刷新服务端音色</button><button id="register-server-voice" class="primary" type="button">注册参考音色</button></div>
+              </div>
+              <p class="inline-hint">缓存音色重启后消失；命名音色保存为服务端 .breeze 文件。下方参考录音仍保存在插件中。</p>
+              <div id="server-voices" class="voice-grid"><p class="empty">保存 C++ 服务地址后，点击刷新服务端音色</p></div>
+            </div>
             <div class="section-heading">
               <div>
                 <h2>参考录音</h2>
@@ -322,6 +344,9 @@
                 <div class="field-heading">
                   <h3>本地 API</h3>
                 </div>
+                <label for="local-implementation">服务端实现</label>
+                <select id="local-implementation" data-config="local.implementation"><option value="python">原 Python API</option><option value="cpp">Breeze-TTS-2.cpp（含鉴权 / FIFO fork）</option></select>
+                <small>C++ 原项目与 fork 使用相同协议；鉴权填写下方 Key，服务端负责排队。Python API 保留原有参数。</small>
                 <label for="local-url">服务地址</label
                 ><input
                   id="local-url"
@@ -357,7 +382,8 @@
                 ><select id="local-mode" data-config="local.mode">
                   <option value="reference">参考音色复刻</option>
                   <option value="design">声音设计</option>
-                  <option value="plain">普通朗读</option></select
+                  <option value="plain">普通朗读</option><option value="voice">服务端音色（C++）</option></select
+                ><label for="local-server-voice">服务端音色 ID（C++）</label><input id="local-server-voice" data-config="local.voice_id" maxlength="64" placeholder="从服务端音色库选择，或填写完整 ID"
                 ><label for="local-reference">默认参考录音</label
                 ><select
                   id="local-reference"
@@ -411,6 +437,22 @@
                   >纯音色复刻建议 CFG=1；带声音描述可尝试
                   4。普通朗读可不传参考录音和描述</small
                 >
+              </div>
+              <div id="cpp-settings" hidden>
+                <h3>C++ 合成参数</h3>
+                <label for="local-format">工作台单段输出格式</label><select id="local-format" data-config="local.output_format"><option value="pcm">PCM（封装 WAV）</option><option value="wav">WAV</option><option value="mp3">MP3（未编译编码器时返回 WAV）</option></select>
+                <small>聊天发送与动态语调多段合成统一使用无损 PCM/WAV。PCM 走原生表单，WAV/MP3 走 JSON 音频接口；上传参考音色会自动注册内存缓存。</small>
+                <div class="form-grid">
+                  <div><label for="local-temperature">Temperature</label><input id="local-temperature" type="number" min="0" max="5" step="0.05" data-config="local.temperature" /></div>
+                  <div><label for="local-top-k">Top K</label><input id="local-top-k" type="number" min="0" max="10000" step="1" data-config="local.top_k" /></div>
+                  <div><label for="local-top-p">Top P</label><input id="local-top-p" type="number" min="0" max="1" step="0.01" data-config="local.top_p" /></div>
+                  <div><label for="local-repetition">重复惩罚</label><input id="local-repetition" type="number" min="0" max="5" step="0.05" data-config="local.repetition_penalty" /></div>
+                  <div><label for="local-split">长文本分段字符数</label><input id="local-split" type="number" min="-1" max="10000" step="1" data-config="local.split_chars" /></div>
+                  <div><label for="local-token-limit">每段最大帧数</label><input id="local-token-limit" type="number" min="0" max="15000" step="1" data-config="local.max_new_tokens" /></div>
+                </div>
+                <small>采样参数及最大帧数为 0 时沿用服务端默认值。分段字符数 -1 跟随服务端，0 关闭服务端分段；每秒约 12.5 帧。长文本建议保留分段。</small>
+                <button id="refresh-local-status" class="secondary" type="button">刷新模型与队列状态</button>
+                <p id="local-server-status" role="status" class="muted">尚未查询模型和队列</p>
               </div>
               <div id="cloud-settings" hidden>
                 <h3>BreezeBlue 官方 API</h3>
@@ -702,6 +744,25 @@
         <button id="confirm-enable-tone" type="button" variant="tonal" class="primary">一并开启</button>
       </div>
     </dialog>
+    <dialog id="server-voice-dialog" class="server-voice-dialog">
+      <form id="server-voice-form">
+        <h2 id="server-voice-title" class="text-h3 pa-4 pb-0 pl-6">注册服务端音色</h2>
+        <div class="dialog-body">
+        <div id="server-register-fields"><label for="server-register-reference">插件参考录音</label><select id="server-register-reference"></select>
+          <label for="server-register-name">持久音色名（可选）</label><input id="server-register-name" maxlength="64" pattern="[A-Za-z0-9_-]*" placeholder="留空仅创建内存缓存" />
+          <small>名称限字母、数字、短横线或下划线；填写后保存 .breeze 文件，同名会覆盖音色，请核对名称。</small></div>
+        <label for="server-voice-description">音色描述</label><textarea id="server-voice-description" rows="3" maxlength="4096"></textarea>
+        <label for="server-voice-metadata">元数据（JSON 对象）</label><textarea id="server-voice-metadata" rows="4">{}</textarea>
+        <small>描述最多 4096 个 UTF-8 字节；元数据最多 32 项，每个值最多 1024 字节。移除已有字段可删除对应键，或将值设为 null；这些信息不改变合成声音。</small>
+        <p id="server-voice-progress" role="status"></p>
+        </div>
+        <div class="dialog-actions"><button id="cancel-server-voice" type="button" variant="text" class="text-button">关闭</button><button id="cancel-server-registration" type="button" variant="text" class="text-button" hidden>取消任务</button><button id="save-server-voice" type="submit" variant="tonal" class="secondary">保存到服务端</button></div>
+      </form>
+    </dialog>
+    <dialog id="server-delete-dialog"><h2 class="text-h3 pa-4 pb-0 pl-6">移出服务端内存</h2><p id="server-delete-message" class="dialog-body"></p>
+      <div class="dialog-actions"><button id="cancel-server-delete" type="button" variant="text" class="text-button">取消</button><button id="confirm-server-delete" type="button" variant="tonal" class="secondary">确认移出</button></div>
+    </dialog>
+    <datalist id="local-addresses"><option value="http://127.0.0.1:8080/v1"></option><option value="http://127.0.0.1:7863/v1"></option><option value="http://127.0.0.1:7860"></option><option value="http://127.0.0.1:7861"></option></datalist>
     <dialog id="reference-dialog">
       <form id="reference-form">
         <h2 class="text-h3 pa-4 pb-0 pl-6">编辑参考录音</h2>
