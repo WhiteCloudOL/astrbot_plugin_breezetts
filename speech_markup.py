@@ -76,7 +76,29 @@ def parse_speech(
             parts.append((pending, False))
     elif tail:
         parts.append((tail, False))
-    return parts
+    # Formatting around a spoken block belongs to the same utterance. Leaving
+    # its closing punctuation outside would create an isolated text bubble.
+    for index, (text, voice) in enumerate(parts):
+        if not voice:
+            continue
+        if index and not parts[index - 1][1]:
+            before = parts[index - 1][0]
+            opening = re.search(r"[“‘（(【《〈「『]+\Z", before)
+            if opening:
+                text = opening[0] + text
+                parts[index - 1] = (before[: opening.start()], False)
+        if index + 1 < len(parts) and not parts[index + 1][1]:
+            after = parts[index + 1][0]
+            closing = re.match(
+                r"(?:(?:[。！？!?…]+|\.{2,}|\.(?=\s|$|[”’\"'）)】\]》〉」』]))"
+                r"[”’\"'）)】\]》〉」』]*|[”’\"'）)】\]》〉」』]+)",
+                after,
+            )
+            if closing:
+                text += closing[0]
+                parts[index + 1] = (after[closing.end() :], False)
+        parts[index] = (text, True)
+    return [(text, voice) for text, voice in parts if text]
 
 
 def strip_delivery_ack(text: str) -> str:
@@ -111,6 +133,23 @@ def strip_delivery_ack(text: str) -> str:
     return "".join(lines)
 
 
+def clean_speech_bubble(text: str) -> str:
+    """Clean the visible edges of a text bubble created by voice delivery.
+
+    Args:
+        text: A caption or surrounding text, with synthesis already planned.
+
+    Returns:
+        A contiguous slice without edge blank lines or terminal Chinese full
+        stops. Internal spacing, expressive punctuation and code stay intact.
+    """
+    text = re.sub(r"\A(?:[ \t\u200b\ufeff]*\r?\n)+", "", text)
+    text = re.sub(r"(?:\r?\n[ \t\u200b\ufeff]*)+\Z", "", text)
+    if not re.search(r"(?m)^(?:[ \t]*(?:```|~~~)| {4}|\t)", text):
+        text = text.rstrip("。 \t\r\n\u200b\ufeff")
+    return text if text.strip(" \t\r\n\u200b\ufeff") else ""
+
+
 def select_spoken_span(text: str, limit: int) -> tuple[int, int] | None:
     """Choose one bounded prose passage without involving the language model.
 
@@ -134,10 +173,21 @@ def select_spoken_span(text: str, limit: int) -> tuple[int, int] | None:
         if re.match(r"\s*(?:#{1,6}\s|[-*+]\s|\d+[.)、]\s*|>\s*|\|)", line[0]):
             continue
         for sentence in re.finditer(
-            r".+?(?:[。！？!?]+[”’\"']*|(?<!\d)\.(?=\s|$)|$)",
+            r".+?(?:(?:[。！？!?…]+|\.{3,}|(?<!\d)\.(?=\s|$))"
+            r"[”’\"'）)】\]》〉」』]*|$)",
             line[0],
         ):
             content = sentence[0].strip()
+            # Keep closing Markdown with its opening marker in the spoken span.
+            tail = line[0][sentence.end() :]
+            while (closing := re.match(r"\*\*|__|~~", tail)) and content.count(
+                closing[0]
+            ) % 2:
+                content += closing[0]
+                tail = tail[closing.end() :]
+                suffix = re.match(r"[”’\"'）)】\]》〉」』]*", tail)[0]
+                content += suffix
+                tail = tail[len(suffix) :]
             start = (
                 line.start()
                 + sentence.start()
@@ -152,11 +202,14 @@ def select_spoken_span(text: str, limit: int) -> tuple[int, int] | None:
             ):
                 continue
             if end - start > limit:
+                sentence_end = end
                 end = start + limit
                 boundaries = list(re.finditer(r"[\s，,；;、：:]", text[start:end]))
                 if boundaries:
                     end = start + boundaries[-1].end()
                 elif content.isascii():
+                    continue
+                if not any(char.isalnum() for char in text[end:sentence_end]):
                     continue
             while end > start and text[end - 1].isspace():
                 end -= 1

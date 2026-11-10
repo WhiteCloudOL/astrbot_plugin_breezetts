@@ -46,6 +46,8 @@ Dynamic Tone is off by default. When off, recognized inline controls and per-cal
 
 When keeping the spoken text, the plugin sends its caption first and then a standalone voice message. Text and voice are never combined in a single outgoing message. Use punctuation and single native pause tags rather than stacked pauses or invented duration syntax. Multi-section synthesis returns one WAV file; single-section workbench synthesis retains the configured output format. Chat synthesis uses WAV with at least 400 ms of quiet audio after speech. Existing quiet tails count toward the buffer, and all original samples are preserved.
 
+New text bubbles around voice delivery have edge blank lines and terminal Chinese full stops removed. Internal paragraphs, other punctuation and code are preserved. Punctuation and closing quotes or brackets immediately outside speech tags stay with the spoken passage; random selection also includes ellipses and closing markers. This display cleanup preserves punctuation in synthesis input and voice transcripts.
+
 In Connection & Settings → Chat & Runtime, **输出整数秒语音** (Whole-second voice output) is enabled by default. The hint explains that SnowLuma rounds reported voice durations to the nearest second. When enabled, the plugin pads chat audio up to whole seconds using trailing silence; this works with any adapter. Alignment may add less than one extra second of silence. Disabling it keeps the normal quiet buffer without whole-second alignment. Save the configuration to apply the choice.
 
 ![Whole-second voice output and SnowLuma hint](../images/integer-second-audio-desktop.png)

@@ -26,6 +26,7 @@ from .settings import DEFAULTS, BreezeError
 from .speech_markup import (
     ENCODED_TAG,
     TAG,
+    clean_speech_bubble,
     parse_speech,
     select_spoken_span,
     strip_delivery_ack,
@@ -252,6 +253,50 @@ class SpeechDelivery:
         ):
             batches.append(pending)
 
+        # Normalize only the new text bubbles. Keep the result and audio transcript
+        # unchanged so failed delivery can still fall back to the original text.
+        prepared = []
+        routing = []
+        for batch in batches:
+            if len(batch) == 1 and isinstance(batch[0], Record):
+                prepared.append(batch)
+                continue
+            original = "".join(part.text for part in batch if isinstance(part, Plain))
+            visible = clean_speech_bubble(original)
+            if visible != original:
+                self.logger.debug(
+                    "Breeze speech bubble edges cleaned (characters_before=%s, characters_after=%s).",
+                    len(original),
+                    len(visible),
+                )
+            start = original.find(visible) if visible else 0
+            end = start + len(visible)
+            cursor = 0
+            cleaned = []
+            for part in batch:
+                if isinstance(part, Plain):
+                    text = part.text[max(0, start - cursor) : max(0, end - cursor)]
+                    cursor += len(part.text)
+                    if not text:
+                        continue
+                    if text != part.text:
+                        part = part.copy()
+                        part.text = text
+                cleaned.append(part)
+            if any(
+                isinstance(part, Plain)
+                and part.text.strip(" \t\r\n\u200b\ufeff")
+                or not isinstance(part, (Plain, Reply, At, AtAll))
+                for part in cleaned
+            ):
+                prepared.append(routing + cleaned)
+                routing = []
+            else:
+                routing.extend(
+                    part for part in cleaned if isinstance(part, (Reply, At, AtAll))
+                )
+        batches = prepared
+
         outcome = None
         delivered = False
         try:
@@ -393,8 +438,12 @@ class SpeechDelivery:
                         self.service.store.path(item["id"]), text=caption
                     )
                 ]
-                if config["behavior"]["keep_text"] and caption:
-                    if await event.send(MessageChain([Plain(caption)])) is False:
+                visible_caption = clean_speech_bubble(caption)
+                if config["behavior"]["keep_text"] and visible_caption:
+                    if (
+                        await event.send(MessageChain([Plain(visible_caption)]))
+                        is False
+                    ):
                         raise RuntimeError("Breeze caption was rejected by the sender")
                     caption_sent = True
                 if await event.send(MessageChain(chain)) is False:
