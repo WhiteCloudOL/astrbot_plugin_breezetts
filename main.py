@@ -18,7 +18,7 @@ from .breeze_control import control_prompt
 from .service import BreezeService
 from .settings import BreezeError
 from .speech import TURN_KEY, SpeechDelivery
-from .speech_markup import strip_delivery_ack
+from .speech_markup import clean_speech_bubble, strip_delivery_ack
 from .web import WorkbenchAPI
 
 PLUGIN_NAME = "astrbot_plugin_breezetts"
@@ -93,7 +93,7 @@ class BreezeTTS(Star):
             state = self.speech.turn(event)
             state.source = "command"
             assert self.service.store is not None
-            caption = self.service.clean_text(parts[1]).strip()
+            caption = clean_speech_bubble(self.service.clean_text(parts[1]).strip())
             if self.service.settings()["behavior"]["keep_text"] and caption:
                 yield event.plain_result(caption)
             # Caption delivery must not release the pending voice reservation.

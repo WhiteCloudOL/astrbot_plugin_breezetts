@@ -2,6 +2,7 @@
 
 import pytest
 from breezetts_test.speech_markup import (
+    clean_speech_bubble,
     parse_speech,
     select_spoken_span,
     strip_delivery_ack,
@@ -23,6 +24,11 @@ from breezetts_test.speech_markup import (
         ("<tts>含`代码`</tts>", "含`代码`", []),
         ("&lt;tts&gt;你好&lt;/tts&gt;", "你好", ["你好"]),
         ("<tts>甲</tts>和<breeze_tts>乙</breeze_tts>", "甲和乙", ["甲", "乙"]),
+        ("<tts>你好</tts>！后面文字。", "你好！后面文字。", ["你好！"]),
+        ("“<tts>你好</tts>。”后面文字。", "“你好。”后面文字。", ["“你好。”"]),
+        ("<tts>等等</tts>……", "等等……", ["等等……"]),
+        ("<tts>Wait</tts>... Next.", "Wait... Next.", ["Wait..."]),
+        ("<tts>版本 1</tts>.2", "版本 1.2", ["版本 1"]),
         ("`[笑]` [语气:温柔]你好。", "`[笑]` 你好。", []),
         ("```text\n[style:literal][笑]\n```", "```text\n[style:literal][笑]\n```", []),
     ],
@@ -39,6 +45,12 @@ def test_markup_balancing_and_code(raw, clean, spoken):
         ("你好呀。后面继续文字。", "你好呀。"),
         ("\n  你好！\n下一句", "你好！"),
         ("Hello there. More text follows.", "Hello there."),
+        ("先等一下……后面继续说。", "先等一下……"),
+        ("先等一下...后面继续说。", "先等一下..."),
+        ("**先说这一句。**后面继续说。", "**先说这一句。**"),
+        ("她说：“再等一下！”后面继续说。", "她说：“再等一下！”"),
+        ("这是提醒（一定记住！）后面继续说。", "这是提醒（一定记住！）"),
+        ("版本 1.2 已经更新。后面继续说。", "版本 1.2 已经更新。"),
         ("```python\nprint('code')\n```\n这是解释。", "这是解释。"),
         ("访问 https://example.com。然后继续聊天。", "然后继续聊天。"),
         ("- 清单条目\n1. 另一条\n自然聊天内容。", "自然聊天内容。"),
@@ -60,6 +72,45 @@ def test_random_passage_is_bounded_without_merging_the_full_reply():
     start, end = select_spoken_span(text, 1000)
     assert (start, end) == (0, 200)
     assert select_spoken_span(text, 12) == (0, 12)
+
+
+def test_random_limit_does_not_leave_a_punctuation_only_remainder():
+    assert select_spoken_span("完整的一句话。", 6) is None
+    text = "完整的一句话。后面继续说。"
+    span = select_spoken_span(text, 6)
+    assert text[slice(*span)] == "后面继续说。"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        (
+            "\n\n而且看了一眼跟特意整理成故事能一样嘛，反正我不说。",
+            "而且看了一眼跟特意整理成故事能一样嘛，反正我不说",
+        ),
+        ("\r\n \r\n内容很长。中间标点保留。\r\n\t\r\n", "内容很长。中间标点保留"),
+        ("第一段。\n\n第二段！", "第一段。\n\n第二段！"),
+        ("真的？！", "真的？！"),
+        ("等等……", "等等……"),
+        ("你好～", "你好～"),
+        ("Hello. Version 1.2.", "Hello. Version 1.2."),
+        ("她说：“你好。”", "她说：“你好。”"),
+        ("`原样。`", "`原样。`"),
+        ("\n```text\n原样。\n```\n", "```text\n原样。\n```"),
+        ("```text\n未闭合代码。", "```text\n未闭合代码。"),
+        ("    缩进代码。", "    缩进代码。"),
+        ("\n\n\u200b\n。\n\n", ""),
+        ("正文。\n\n。\n", "正文"),
+        (" \n\u200b\n", ""),
+    ],
+)
+def test_voice_bubble_edges_preserve_internal_text_and_expressive_punctuation(
+    text, expected
+):
+    cleaned = clean_speech_bubble(text)
+    assert cleaned == expected
+    assert cleaned in text
+    assert clean_speech_bubble(cleaned) == cleaned
 
 
 @pytest.mark.parametrize(

@@ -369,8 +369,8 @@ async def test_real_decorate_and_send_pipeline(
     expected_after = (
         "结尾第一句。第二句。" if tagged else "第二句。中间语音结尾第一句。第二句。"
     )
-    assert before == expected_before
-    assert after == expected_after
+    assert before == expected_before.removesuffix("。")
+    assert after == expected_after.removesuffix("。")
     assert calls == ["中间语音" if tagged else "开头第一句。"]
     assert not plugin.service.delivery_audio
 
@@ -607,7 +607,7 @@ async def test_random_adaptation_adds_native_events_and_section_directions(
         .args[0]["local"]["instruction"]
         .endswith("放慢一点，温柔而认真")
     )
-    assert event.sent[0][0].text == original
+    assert event.sent[0][0].text == original.removesuffix("。")
     assert [type(chain[0]) for chain in event.sent] == [Plain, Record]
     prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
     assert (
@@ -811,7 +811,7 @@ async def test_fixed_provider_random_adaptation_and_caption_filtering(
     await plugin.preserve_speech_order(event)
     assert not event.get_result().chain
     assert [type(chain[0]) for chain in event.sent] == [Plain, Record]
-    assert event.sent[0][0].text == "你好呀。"
+    assert event.sent[0][0].text == "你好呀"
     assert provider.calls[0]["voice"]["emotion"] == (
         "happy" if style == "happy" else "calm"
     )
@@ -921,7 +921,7 @@ async def test_dynamic_tool_controls_hide_in_caption_and_history(
     assert calls == ["[轻笑]你好。", "一起走。"]
     assert spy.await_args_list[0].args[0]["local"]["instruction"] == "慢一点\n温柔"
     assert spy.await_args_list[1].args[0]["local"]["instruction"] == "慢一点\n坚定"
-    assert event.sent[0][0].text == "你好。一起走。"
+    assert event.sent[0][0].text == "你好。一起走"
     assert isinstance(event.sent[1][0], Record)
     raw = "<tts>[语气:温柔][轻笑]你好。</tts>"
     response = LLMResponse(role="assistant", completion_text=raw)
@@ -1766,15 +1766,9 @@ async def test_quote_added_after_synthesis_never_leaves_an_empty_bubble(
     assert sum(
         isinstance(part, Record) for chain in event.sent for part in chain
     ) == int(quote_keep_text)
-    assert (
-        "".join(
-            part.text
-            for chain in event.sent
-            for part in chain
-            if isinstance(part, Plain)
-        )
-        == text
-    )
+    assert "".join(
+        part.text for chain in event.sent for part in chain if isinstance(part, Plain)
+    ) == (text.removesuffix("。") if quote_keep_text else text)
     assert all(
         any(
             isinstance(part, Record) or isinstance(part, Plain) and part.text.strip()
@@ -1786,7 +1780,9 @@ async def test_quote_added_after_synthesis_never_leaves_an_empty_bubble(
         chain for chain in event.sent if any(isinstance(part, Reply) for part in chain)
     ]
     assert len(quoted) == 1 and any(
-        isinstance(part, Plain) and part.text == text for part in quoted[0]
+        isinstance(part, Plain)
+        and part.text == (text.removesuffix("。") if quote_keep_text else text)
+        for part in quoted[0]
     )
     assert not plugin.service.delivery_audio
     assert ("reason=late_quote_text_only" in caplog.text) is not quote_keep_text
@@ -1826,7 +1822,9 @@ async def test_framework_quote_setting_keeps_the_reply_body(
         chain for chain in event.sent if any(isinstance(part, Reply) for part in chain)
     ]
     assert len(quoted) == 1 and any(
-        isinstance(part, Plain) and part.text == text for part in quoted[0]
+        isinstance(part, Plain)
+        and part.text == (text.removesuffix("。") if quote_keep_text else text)
+        for part in quoted[0]
     )
     assert sum(
         isinstance(part, Record) for chain in event.sent for part in chain
@@ -1982,6 +1980,139 @@ async def test_voice_failure_after_caption_does_not_request_whole_message_retry(
     assert isinstance(sender.await_args_list[0].args[0].chain[0], Plain)
     assert isinstance(sender.await_args_list[1].args[0].chain[0], Record)
     assert not plugin.service.delivery_audio
+
+
+@pytest.mark.parametrize("keep_text", [False, True])
+@pytest.mark.parametrize("tagged", [False, True])
+async def test_voice_text_bubbles_clean_edges_without_changing_synthesis(
+    speech_plugin, event_factory, keep_text, tagged
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"]["keep_text"] = keep_text
+    spoken = "先说一句。"
+    remaining = (
+        "内容非常血腥残忍而且涉及他人隐私，看着让人挺不舒服的，不建议在群里传播和细看。"
+    )
+    raw = (
+        (f"<tts>{spoken}</tts>" if tagged else spoken) + "\r\n\r\n" + remaining + "\r\n"
+    )
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain(raw)], result_content_type=ResultContentType.LLM_RESULT
+        )
+    )
+    await decorate_model_result(plugin, event)
+    await plugin.preserve_speech_order(event)
+    assert calls == [spoken]
+    assert [type(chain[0]) for chain in event.sent] == (
+        [Plain] if keep_text else []
+    ) + [Record, Plain]
+    captions = [
+        "".join(c.text for c in chain if isinstance(c, Plain))
+        for chain in event.sent
+        if not isinstance(chain[0], Record)
+    ]
+    assert captions == (["先说一句"] if keep_text else []) + [
+        remaining.removesuffix("。")
+    ]
+    assert not event.get_result().chain and not plugin.service.delivery_audio
+
+
+@pytest.mark.parametrize("suffix", ["。", "。。。", "。\n\n", "\n \n"])
+async def test_tagged_voice_does_not_send_empty_or_punctuation_only_bubbles(
+    speech_plugin, event_factory, suffix
+):
+    plugin, _, _ = speech_plugin
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[
+                Reply(id="source"),
+                At(qq="user"),
+                Plain("<tts>你好</tts>" + suffix),
+            ],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    plugin.config["behavior"]["quote_keep_text"] = True
+    await decorate_model_result(plugin, event)
+    await plugin.preserve_speech_order(event)
+    assert len(event.sent) == 2
+    assert [type(c) for c in event.sent[0]] == [Reply, At, Plain]
+    assert event.sent[0][-1].text == "你好"
+    assert [type(c) for c in event.sent[1]] == [Record]
+
+
+@pytest.mark.parametrize("ending", ["！", "？", "……", "..."])
+async def test_punctuation_outside_speech_tags_is_kept_with_the_voice(
+    speech_plugin, event_factory, ending
+):
+    plugin, calls, _ = speech_plugin
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("<tts>你好</tts>" + ending)],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await decorate_model_result(plugin, event)
+    await plugin.preserve_speech_order(event)
+    assert calls == ["你好" + ending]
+    assert len(event.sent) == 1 and isinstance(event.sent[0][0], Record)
+    assert event.sent[0][0].text == "你好" + ending
+
+
+async def test_fragmented_bubble_cleanup_keeps_routing_media_and_fallback_originals(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    event = event_factory()
+    event.set_result(
+        MessageEventResult(
+            chain=[Plain("先说一句。")],
+            result_content_type=ResultContentType.LLM_RESULT,
+        )
+    )
+    await decorate_model_result(plugin, event)
+    record = event.get_result().chain[0]
+    image = Image.fromURL("https://example.test/picture.png")
+    original = [
+        Reply(id="source"),
+        At(qq="user"),
+        Plain("\n"),
+        Plain("。\n"),
+        record,
+        Plain("\n\n"),
+        Plain("正文。\n\n第二段！"),
+        Plain("\n\n"),
+        image,
+    ]
+    before = copy.deepcopy(original)
+    sender = AsyncMock()
+    await plugin.speech.send_chain(sender, MessageEventResult(chain=original))
+    assert calls == ["先说一句。"] and original == before
+    batches = [call.args[0].chain for call in sender.await_args_list]
+    assert batches[0] == [record]
+    assert [type(c) for c in batches[1]] == [Reply, At, Plain, Image]
+    assert batches[1][2].text == "正文。\n\n第二段！" and batches[1][-1] is image
+    assert not plugin.service.delivery_audio
+
+
+async def test_tool_and_command_captions_use_the_same_visible_edges(
+    speech_plugin, event_factory
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"]["keep_text"] = True
+    event = event_factory()
+    await plugin.breeze_tts(event, "你好。\n\n")
+    assert calls == ["你好。"]
+    assert event.sent[0][0].text == "你好"
+    assert event.sent[1][0].text == "你好。"
+    command = plugin.speak(event_factory("breezetts 你好。"))
+    caption = await command.__anext__()
+    assert caption.chain[0].text == "你好"
+    await command.aclose()
 
 
 async def test_quoted_voice_request_does_not_inject_current_turn_hint(
@@ -2280,7 +2411,7 @@ async def test_random_adaptation_may_choose_no_tags_or_direction(
     assert calls == ["自然朗读这句台词。"]
     assert spy.await_args.args[0]["local"]["instruction"] == ""
     assert [type(chain[0]) for chain in event.sent] == [Plain, Record]
-    assert event.sent[0][0].text == "自然朗读这句台词。"
+    assert event.sent[0][0].text == "自然朗读这句台词"
     assert "adaptation failed" not in caplog.text
     prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
     assert "Both fields are optional" in prompt and "never mandatory" in prompt
