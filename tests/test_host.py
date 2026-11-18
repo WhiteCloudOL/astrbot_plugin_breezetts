@@ -437,8 +437,22 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
         }
         for name, saved in (("cpp_saved", True), ("cpp_cached", False))
     }
+    cpp_catalog_reads = 0
+    cpp_voices.update(
+        {
+            f"library_{index:02}": {
+                "id": f"library_{index:02}",
+                "saved": True,
+                "metadata": {"name": f"目录音色 {index}"},
+                "description": "夜间讲故事" if index == 25 else "",
+                "ref_text": "试听文本",
+            }
+            for index in range(1, 26)
+        }
+    )
 
     async def upstream(request):
+        nonlocal cpp_catalog_reads
         if request.path.startswith("/cpp/"):
             assert request.headers.get("Authorization") == "Bearer cpp-ui-key"
             if request.path.endswith("/health"):
@@ -451,6 +465,7 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
                 return web.json_response({"active": 1, "waiting": 2, "capacity": 1})
             if request.path.endswith("/voices"):
                 if request.method == "GET":
+                    cpp_catalog_reads += 1
                     return web.json_response(list(cpp_voices.values()))
                 fields = await request.post()
                 name = fields.get("name", "cpp_registered")
@@ -494,6 +509,9 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             return web.Response(body=wav_audio[44:], content_type="audio/pcm")
         if request.path.endswith("/models"):
             return web.json_response([{"model_id": "breeze-tts-2"}])
+        if request.method == "GET" and request.path.startswith("/v1/voices/"):
+            assert request.headers["Authorization"] == "Bearer browser-test-key"
+            return web.json_response({"voice_id": request.path.rsplit("/", 1)[-1]})
         if request.path.endswith("/voices"):
             voice_catalog_calls.append(dict(request.query))
             second = request.query.get("next_page_token") == "next"
@@ -1063,7 +1081,9 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await capture_view("settings-cloud-formats.png")
             await frame.locator("#cloud-delivery").select_option("sync")
             await frame.locator("#test-connection").click()
-            await expect(frame.locator("#connection-result")).to_have_text("连接成功")
+            await expect(frame.locator("#connection-result")).to_have_text(
+                "连接成功，已核验官方音色 ID"
+            )
             await expect(frame.locator("#cloud-key")).to_have_value("")
             await frame.locator('[data-config="behavior.auto_tts"]').check()
             await expect(
@@ -1311,7 +1331,6 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await page.reload()
             await frame.locator('[data-page="settings"]').click()
             await frame.locator("#backend").select_option("local")
-            await frame.locator("#local-implementation").select_option("cpp")
             await frame.locator("#local-url").fill(base_url + "/cpp/v1")
             await frame.locator("#local-key").fill("cpp-ui-key")
             await frame.locator("#local-reference").select_option(reference["id"])
@@ -1327,6 +1346,40 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await capture_view("settings-cpp-desktop.png")
             await frame.locator('[data-page="voices"]').click()
             await frame.locator("#refresh-server-voices").click()
+            await expect(frame.locator("#server-voice-page-info")).to_have_text(
+                "第 1 / 3 页 · 共 27 个音色"
+            )
+            await expect(
+                frame.locator("#server-voices [data-server-voice-id]")
+            ).to_have_count(12)
+            await frame.locator("#server-voice-next").click()
+            await expect(frame.locator("#server-voice-page-info")).to_contain_text(
+                "第 2 / 3 页"
+            )
+            await frame.locator("#server-voice-next").click()
+            await expect(frame.locator("#server-voice-next")).to_be_disabled()
+            await expect(
+                frame.locator("#server-voices [data-server-voice-id]")
+            ).to_have_count(3)
+            await frame.locator("#server-voice-search").fill("不存在")
+            await expect(frame.locator("#server-voices")).to_contain_text("没有匹配")
+            await frame.locator("#server-voice-search").fill(
+                "ＬＩＢＲＡＲＹ_25 夜间 试听"
+            )
+            await expect(frame.locator("#server-voice-page-info")).to_contain_text(
+                "匹配 1 / 27"
+            )
+            await expect(
+                frame.locator("#server-voices [data-server-voice-id]")
+            ).to_have_count(1)
+            await expect(
+                frame.locator('[data-server-voice-id="library_25"] strong')
+            ).to_have_text("目录音色 25")
+            await frame.locator("#server-voice-search").clear()
+            await expect(frame.locator("#server-voice-page-info")).to_contain_text(
+                "第 1 / 3 页"
+            )
+            assert cpp_catalog_reads == 1
             saved_card = frame.locator('[data-server-voice-id="cpp_saved"]')
             await saved_card.get_by_role(
                 "button", name="使用此音色", exact=True
@@ -1357,11 +1410,20 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await frame.locator("#confirm-server-delete").click()
             await expect(saved_card).to_have_count(0)
             await frame.locator("#register-server-voice").click()
-            await frame.locator("#server-register-reference").select_option(
-                reference["id"]
+            await expect(frame.locator("#server-register-source")).to_have_value(
+                "upload"
             )
+            await frame.locator("#server-register-file").set_input_files(
+                {
+                    "name": "server-reference.wav",
+                    "mimeType": "audio/wav",
+                    "buffer": wav_audio,
+                }
+            )
+            await frame.locator("#server-register-text").fill("服务端录音文字稿。")
             await frame.locator("#server-register-name").fill("new_cpp_voice")
             await frame.locator("#server-voice-description").fill("新注册的测试音色")
+            await frame.locator("#server-register-select").check()
             await frame.locator("#server-voice-dialog").screenshot(
                 path=str(screenshot_dir / "server-voice-dialog-desktop.png")
             )
@@ -1378,6 +1440,13 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             await expect(
                 frame.locator('[data-server-voice-id="new_cpp_voice"]')
             ).to_have_count(1)
+            assert cpp_voices["new_cpp_voice"]["ref_text"] == "服务端录音文字稿。"
+            assert plugin.service.settings()["local"]["voice_id"] == "new_cpp_voice"
+            assert not plugin.service.voice_uploads
+            assert not any(
+                item["name"] == "server-reference.wav"
+                for item in plugin.service.store.items.values()
+            )
             await capture_view("voices-cpp-desktop.png")
             await page.set_viewport_size({"width": 390, "height": 844})
             await capture_view("voices-cpp-mobile.png")
@@ -1390,7 +1459,7 @@ async def test_browser_workbench(host_http, loaded_plugin, server, wav_audio, tm
             )
             await expect(frame.locator("#player-state")).to_have_text("4.0 秒")
             assert (
-                cpp_forms[-1]["voice"] == "cpp_cached"
+                cpp_forms[-1]["voice"] == "new_cpp_voice"
                 and cpp_forms[-1]["temperature"] == 0.65
             )
             await frame.locator("#conversion-source").select_option(reference["id"])

@@ -241,10 +241,10 @@ async def test_persistence_failure_keeps_saved_config(
     )
 
 
-async def test_local_cfg_requires_an_instruction(config):
-    config["local"].update(mode="plain", cfg_scale=4)
+async def test_default_server_voice_requires_an_id(config):
+    assert config["local"]["mode"] == "voice"
     client = BreezeClient()
-    with pytest.raises(BreezeError, match="CFG"):
+    with pytest.raises(BreezeError, match="服务端音色"):
         await client.synthesize(config, "测试")
     assert client.session is None
 

@@ -14,7 +14,7 @@ The standard AstrBot configuration entry and the workbench share the same settin
 
 ## Local API
 
-Set the local service root, such as `http://127.0.0.1:7860` or `http://127.0.0.1:7861`. A populated API Key sends Bearer authentication; an empty key uses direct access
+Set the local service root, such as `http://127.0.0.1:8080/v1` or `http://127.0.0.1:7863/v1`. A populated API Key sends Bearer authentication; an empty key uses direct access
 
 Upload a recording, enter its exact transcript, and select it as the current voice. Each card has a prominent selection button, grouped playback/download/edit controls, and a separate delete action. Voice design uses the description configured in settings; plain mode provides ordinary narration
 
@@ -24,7 +24,7 @@ Upload a recording, enter its exact transcript, and select it as the current voi
 
 Select BreezeBlue official API and enter `https://api.breeze.blue/v1` and your developer key. Save and check the connection, then browse personal or public voices and choose one
 
-For an existing voice, paste the complete `voice_id` in Connection & Settings and save; catalog synchronization is not required. Prefixes and UUIDs are passed through unchanged. Clipboard whitespace, BOM and zero-width padding are removed only at the edges. Do not paste a name, preview ID, URL or extra quotes. For upstream 403/404 errors, check the ID and the API key account’s access. A connection check does not verify permission to synthesize that voice.
+Paste the complete `voice_id` in Connection & Settings and save. Prefixes and UUIDs are passed through unchanged after removing clipboard whitespace, BOM and zero-width padding at the edges. **Save and Check Connection** checks the model list and looks up the saved ID with the current API key. A 403 or 404 at that lookup means the account cannot read the selected voice. Use a saved voice ID instead of a name, preview ID or URL.
 
 Clone creation has its own reference-upload control. Enter a voice name and language, generate a preview, audition it, and save it to your account. Voice design accepts a voice description and preview script
 
@@ -128,7 +128,7 @@ The default adaptation template requires strictly one JSON object without Markdo
 
 ## Breeze-TTS-2.cpp HTTP features
 
-Under **Connection & Settings → Local API → Server implementation**, select **Breeze-TTS-2.cpp (including the authentication/FIFO fork)** and save. Existing configurations keep the Python API choice.
+Set the **Breeze-TTS-2.cpp** address under **Connection & Settings → Local API**. This replaces the old **Server implementation** selector. Existing settings retain their address and reference selection. Update the address if it pointed to a Python server.
 
 | Server | Example BaseURL | Authentication and scheduling |
 | --- | --- | --- |
@@ -137,9 +137,11 @@ Under **Connection & Settings → Local API → Server implementation**, select 
 
 Root URLs, `/v1`, full speech endpoints and reverse-proxy prefixes remain supported. The plugin checks `/health`, then reads `/v1/model` and optional `/v1/queue`. Only an absent optional endpoint (404) is treated as unavailable; authentication failures, timeouts and malformed data remain errors.
 
-The **Voices & Recordings** navigation entry is unchanged. With C++ selected, **Local Reference Voices** becomes **Local & Server Voices**: the original reference-recording section remains below the new server catalog. Refresh, select a full server ID, or register a plugin reference with its exact transcript. A blank name creates memory-only cache; a name of 1–64 ASCII letters, digits, dashes or underscores saves a `.breeze` file and can overwrite the same name. Unknown IDs fail explicitly rather than falling back to a different voice.
+Open **Voices & Recordings → Upload Voice**, choose a recording, enter its exact transcript, and select **Save to Server**. You can also register a recording from the plugin library. The dialog suggests a persistent ID. Edit it with 1–64 ASCII letters, digits, dashes or underscores. The server writes a `.breeze` file and overwrites an existing voice with the same ID. Check **Use as current voice** to synthesize with the returned ID. New uploads do not add a copy to the plugin recording library. You can also select an existing server voice from the catalog.
 
 The editor supports descriptions (up to 4096 UTF-8 bytes) and up to 32 string metadata fields (64-character ASCII names using letters, digits, dot, dash or underscore; values up to 1024 bytes). Remove a key or set it to `null` to delete it. Change the selected voice before unloading it. **Unload from memory** keeps saved files, which return after restart; it is not permanent file deletion.
+
+The server catalog shows 12 voices per page. Search matches IDs, names, descriptions and transcripts across the refreshed catalog. Searching and changing pages reuse that snapshot.
 
 ![C++ server catalog](../images/voices-cpp-desktop.png)
 ![Mobile server catalog](../images/voices-cpp-mobile.png)

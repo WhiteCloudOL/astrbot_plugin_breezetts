@@ -30,11 +30,11 @@ async def test_local_random_seed_changes_per_request_without_mutating_settings(
     client = BreezeClient()
     try:
         with patch(
-            "breezetts_test.client.secrets.randbits", side_effect=[0, 2**32 - 1]
+            "breezetts_test.cpp_api.secrets.randbits", side_effect=[0, 2**32 - 1]
         ) as generate:
             await client.synthesize(config, "First request")
             await client.synthesize(config, "Second request")
-        assert seeds == [0, 2**32 - 1]
+        assert seeds == [0, -1]
         assert generate.call_count == 2
         assert config["local"]["seed"] == 42
     finally:
@@ -74,6 +74,7 @@ async def test_local_multipart_auth_and_pcm(server, config, wav_audio, api_key, 
     config["local"].update(
         base_url=await server(handle) + "/proxy" + suffix,
         api_key=api_key,
+        mode="reference",
         cfg_scale=4,
         seed=43,
         random_seed=False,
@@ -138,6 +139,10 @@ async def test_cloud_delivery_protocol(server, config, wav_audio, delivery):
             if delivery == "async":
                 return web.json_response({"generation_job_id": "job_test"}, status=202)
         elif request.path.endswith("/job_test"):
+            if seen.count(request.path) == 1:
+                return web.json_response(
+                    {"generation_job_id": "job_test", "status": "streaming"}
+                )
             return web.json_response(
                 {
                     "generation_job_id": "job_test",
@@ -164,7 +169,7 @@ async def test_cloud_delivery_protocol(server, config, wav_audio, delivery):
     client = BreezeClient()
     try:
         assert await client.synthesize(config, "官方测试") == (wav_audio, "wav")
-        assert len(seen) == (3 if delivery == "async" else 1)
+        assert len(seen) == (4 if delivery == "async" else 1)
     finally:
         await client.close()
 

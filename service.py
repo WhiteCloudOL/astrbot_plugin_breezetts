@@ -23,7 +23,7 @@ from .settings import (
     validate_config,
     validate_identifier,
 )
-from .storage import AUDIO_LIMIT, AudioStore
+from .storage import AUDIO_LIMIT, UPLOAD_LIMIT, AudioStore, normalize_recording
 
 
 class BreezeService:
@@ -40,6 +40,7 @@ class BreezeService:
         self.slots = asyncio.Semaphore(2)
         self.local_slot = asyncio.Lock()
         self.jobs: dict[str, dict] = {}
+        self.voice_uploads: dict[str, tuple[float, bytes]] = {}
         self.tasks: dict[str, asyncio.Task] = {}
         self.requests: set[asyncio.Task] = set()
         self.closed = False
@@ -103,6 +104,9 @@ class BreezeService:
         failed = False
         while True:
             await asyncio.sleep(60)
+            for identifier, (expiry, _) in list(self.voice_uploads.items()):
+                if expiry <= time.monotonic():
+                    del self.voice_uploads[identifier]
             try:
                 async with self.lock:
                     await self.prune_audio(self.settings()["behavior"]["history_limit"])
@@ -126,6 +130,7 @@ class BreezeService:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self.tasks.clear()
+        self.voice_uploads.clear()
         self.requests.clear()
         await self.client.close()
 
@@ -342,25 +347,42 @@ class BreezeService:
                         "sample_rate": health.get("sample_rate"),
                     },
                 }
-                if config["local"]["implementation"] == "cpp":
-                    result.update(
-                        await asyncio.wait_for(
-                            self.client.cpp.status(config["local"]), 20
-                        )
-                    )
+                result.update(
+                    await asyncio.wait_for(self.client.cpp.status(config["local"]), 20)
+                )
                 return result
+            connection = config["cloud"]
             models = await asyncio.wait_for(
-                self.client.request(config["cloud"], "GET", "models"), 20
+                self.client.request(connection, "GET", "models"), 20
             )
             if not isinstance(models, list) or any(
                 not isinstance(item, dict) or not isinstance(item.get("model_id"), str)
                 for item in models
             ):
                 raise BreezeError("官方模型列表格式无效。")
-            return {
+            result = {
                 "backend": "cloud",
                 "models": [{"model_id": item["model_id"]} for item in models],
             }
+            if voice_id := connection["voice_id"]:
+                try:
+                    voice = await asyncio.wait_for(
+                        self.client.request(
+                            connection, "GET", "voices/" + quote(voice_id, safe="")
+                        ),
+                        10,
+                    )
+                except BreezeError as exc:
+                    if exc.code in {"upstream_http_403", "upstream_http_404"}:
+                        raise BreezeError(
+                            f"当前 API Key 无法读取官方音色 {voice_id}。请确认使用已保存的音色 ID 和有访问权限的账号。",
+                            code=exc.code,
+                        ) from None
+                    raise
+                if not isinstance(voice, dict) or voice.get("voice_id") != voice_id:
+                    raise BreezeError("官方音色详情未返回匹配的音色 ID。")
+                result["voice_id"] = voice_id
+            return result
         except (TimeoutError, asyncio.TimeoutError):
             raise BreezeError("连接检查超时，请检查服务地址和网络。") from None
 
@@ -706,11 +728,37 @@ class BreezeService:
                         "Breeze delivery cleanup failed (%s).", type(exc).__name__
                     )
 
+    def stage_voice_upload(self, data: bytes) -> dict:
+        """Reserve an uploaded recording briefly for a registration job.
+
+        Args:
+            data: Recording bytes from the authenticated workbench upload.
+
+        Returns:
+            An opaque, single-use upload identifier.
+
+        Raises:
+            BreezeError: If the file or staging capacity is invalid.
+        """
+        if self.closed or self.settings()["backend"] != "local":
+            raise BreezeError("请先保存 Breeze-TTS-2.cpp 服务设置。")
+        if not data or len(data) > UPLOAD_LIMIT:
+            raise BreezeError("请选择不超过 20 MiB 的参考录音。")
+        now = time.monotonic()
+        for identifier, (expiry, _) in list(self.voice_uploads.items()):
+            if expiry <= now:
+                del self.voice_uploads[identifier]
+        if len(self.voice_uploads) >= 4:
+            raise BreezeError("暂存录音队列已满，请稍后重试。")
+        identifier = uuid.uuid4().hex
+        self.voice_uploads[identifier] = (now + 300, data)
+        return {"upload_id": identifier}
+
     async def submit(self, operation: str, payload: dict) -> dict:
         """Start a tracked WebUI job so long requests survive bridge timeouts.
 
         Args:
-            operation: synthesize, clone, or design.
+            operation: synthesize, clone, design, local_voice, or convert.
             payload: User input for the chosen operation.
 
         Returns:
@@ -730,6 +778,22 @@ class BreezeService:
         if len(self.tasks) >= 8:
             raise BreezeError("任务队列已满，请等待当前任务完成。")
         config = self.settings()
+        recording = None
+        if operation == "local_voice" and "upload_id" in payload:
+            identifier = payload["upload_id"]
+            if (
+                not isinstance(identifier, str)
+                or payload.get("operation", "register") != "register"
+                or payload.get("reference_id")
+                or config["backend"] != "local"
+            ):
+                raise BreezeError("上传录音只能用于本地服务端音色注册。")
+            if payload.get("server_url") != config["local"]["base_url"]:
+                raise BreezeError("服务地址已变化，请刷新服务端音色库后重新上传。")
+            uploaded = self.voice_uploads.pop(identifier, None)
+            if uploaded is None or uploaded[0] <= time.monotonic():
+                raise BreezeError("上传录音已使用或过期，请重新选择文件。")
+            recording = uploaded[1]
         job_id = uuid.uuid4().hex
         for old_id in list(self.jobs):
             if old_id not in self.tasks and (
@@ -746,7 +810,10 @@ class BreezeService:
                 elif operation == "local_voice":
                     result = await asyncio.wait_for(
                         self.local_voice(
-                            payload.get("operation", "register"), payload, config
+                            payload.get("operation", "register"),
+                            payload,
+                            config,
+                            recording=recording,
                         ),
                         config["behavior"]["timeout"],
                     )
@@ -788,7 +855,12 @@ class BreezeService:
         return {"id": job_id}
 
     async def local_voice(
-        self, operation: str, payload: dict, config: dict | None = None
+        self,
+        operation: str,
+        payload: dict,
+        config: dict | None = None,
+        *,
+        recording: bytes | None = None,
     ) -> dict:
         """Mutate the C++ voice library with an optional local reference recording.
 
@@ -796,6 +868,7 @@ class BreezeService:
             operation: register, edit, or remove.
             payload: Voice identity, reference ID, description, and metadata patch.
             config: Optional submission-time configuration snapshot.
+            recording: New upload to register without adding it to the plugin library.
 
         Returns:
             The registered/updated voice or unload result.
@@ -805,7 +878,7 @@ class BreezeService:
         """
         await self.start()
         config = config or self.settings()
-        if config["backend"] != "local" or config["local"]["implementation"] != "cpp":
+        if config["backend"] != "local":
             raise BreezeError("请先选择并保存 Breeze-TTS-2.cpp 服务端。")
         if not isinstance(payload, dict):
             raise BreezeError("服务端音色参数须为 JSON 对象。")
@@ -821,7 +894,7 @@ class BreezeService:
             and payload.get("id") == config["local"]["voice_id"]
         ):
             raise BreezeError("请先更换当前服务端音色，再移出该音色。")
-        if operation == "register":
+        if operation == "register" and recording is None:
             async with self.lock:
                 assert self.store is not None
                 path = self.store.path(payload.get("reference_id"))
@@ -834,6 +907,19 @@ class BreezeService:
                 reference = (await self.io(path.read_bytes), record["ref_text"])
         if operation == "register":
             async with self.local_slot:
+                if recording is not None:
+                    transcript = payload.get("ref_text")
+                    if (
+                        not isinstance(transcript, str)
+                        or not transcript.strip()
+                        or len(transcript) > 4000
+                        or "\x00" in transcript
+                    ):
+                        raise BreezeError("请填写 1–4000 字符的准确文字稿。")
+                    if not payload.get("name"):
+                        raise BreezeError("上传录音需要填写持久音色 ID。")
+                    wav, _, _ = await self.io(normalize_recording, recording)
+                    reference = (wav, transcript.strip())
                 return await self.client.cpp.voice(
                     config["local"], operation, payload, reference
                 )
@@ -856,7 +942,7 @@ class BreezeService:
         """
         await self.start()
         config = config or self.settings()
-        if config["backend"] != "local" or config["local"]["implementation"] != "cpp":
+        if config["backend"] != "local":
             raise BreezeError("语音转换需要 Breeze-TTS-2.cpp 服务端。")
         if not isinstance(payload, dict):
             raise BreezeError("语音转换参数须为 JSON 对象。")

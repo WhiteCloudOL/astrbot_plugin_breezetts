@@ -36,7 +36,12 @@ async def test_synthesis_logs_original_payload_and_correlated_result(
     start = next(m for m in messages if m.startswith("Breeze synthesis started"))
     synthesis_id = re.search(r"synthesis_id=([0-9a-f]+)", start)[1]
     assert "[语气:轻快]尾音不要丢。" in start
-    payload = next(m for m in messages if m.startswith("Breeze synthesis payload"))
+    marker = (
+        "Breeze C++ synthesis payload"
+        if backend == "local"
+        else "Breeze synthesis payload"
+    )
+    payload = next(m for m in messages if m.startswith(marker))
     assert "尾音不要丢。" in payload and "轻快" in payload
     assert f"request_id={synthesis_id}." in payload
     assert (
@@ -94,7 +99,7 @@ async def test_concurrent_synthesis_keeps_request_ids_separate(
     requests = [
         r.getMessage()
         for r in caplog.records
-        if r.getMessage().startswith("Breeze synthesis payload")
+        if r.getMessage().startswith("Breeze C++ synthesis payload")
     ]
     assert len(parents) == 2 and len(requests) == 2
     assert all(

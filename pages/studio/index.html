@@ -174,10 +174,19 @@
           <div id="local-voices-panel">
             <div id="server-voices-panel" hidden>
               <div class="section-heading"><div><h2>服务端音色库</h2><p>直接使用缓存或持久音色，合成时不再上传参考录音</p></div>
-                <div class="button-row"><button id="refresh-server-voices" class="secondary" type="button">刷新服务端音色</button><button id="register-server-voice" class="primary" type="button">注册参考音色</button></div>
+                <div class="button-row"><button id="register-server-voice" class="primary" type="button">上传音色</button><button id="refresh-server-voices" class="secondary" type="button">刷新服务端音色</button></div>
               </div>
               <p class="inline-hint">缓存音色重启后消失；命名音色保存为服务端 .breeze 文件。下方参考录音仍保存在插件中。</p>
+              <div id="server-voice-search-row" hidden>
+                <label for="server-voice-search">搜索服务端音色</label>
+                <input id="server-voice-search" type="search" maxlength="200" placeholder="输入音色 ID、名称、描述或文字稿" />
+              </div>
               <div id="server-voices" class="voice-grid"><p class="empty">保存 C++ 服务地址后，点击刷新服务端音色</p></div>
+              <div id="server-voice-pages" class="button-row catalog-pages" hidden>
+                <button id="server-voice-prev" type="button" class="secondary">上一页</button>
+                <span id="server-voice-page-info" role="status"></span>
+                <button id="server-voice-next" type="button" class="secondary">下一页</button>
+              </div>
             </div>
             <div class="section-heading">
               <div>
@@ -342,18 +351,15 @@
               </div>
               <div id="local-settings">
                 <div class="field-heading">
-                  <h3>本地 API</h3>
+                  <h3>本地 API · Breeze-TTS-2.cpp</h3>
                 </div>
-                <label for="local-implementation">服务端实现</label>
-                <select id="local-implementation" data-config="local.implementation"><option value="python">原 Python API</option><option value="cpp">Breeze-TTS-2.cpp（含鉴权 / FIFO fork）</option></select>
-                <small>C++ 原项目与 fork 使用相同协议；鉴权填写下方 Key，服务端负责排队。Python API 保留原有参数。</small>
                 <label for="local-url">服务地址</label
                 ><input
                   id="local-url"
                   list="local-addresses"
                   data-config="local.base_url"
                   type="url"
-                  placeholder="http://127.0.0.1:7860"
+                  placeholder="http://127.0.0.1:8080/v1"
                 /><small
                   >有 API Key 时自动携带鉴权，留空时直接连接。支持根地址、/v1
                   或完整的 /v1/audio/speech。Docker
@@ -380,10 +386,11 @@
                 <small id="local-key-state" role="status">密钥状态</small
                 ><label for="local-mode">合成模式</label
                 ><select id="local-mode" data-config="local.mode">
-                  <option value="reference">参考音色复刻</option>
+                  <option value="voice">服务端音色</option>
+                  <option value="reference">使用插件参考录音</option>
                   <option value="design">声音设计</option>
-                  <option value="plain">普通朗读</option><option value="voice">服务端音色（C++）</option></select
-                ><label for="local-server-voice">服务端音色 ID（C++）</label><input id="local-server-voice" data-config="local.voice_id" maxlength="64" placeholder="从服务端音色库选择，或填写完整 ID"
+                  <option value="plain">普通朗读</option></select
+                ><label for="local-server-voice">服务端音色 ID</label><input id="local-server-voice" data-config="local.voice_id" maxlength="64" placeholder="在音色管理中上传或选择，也可直接填入 ID"
                 ><label for="local-reference">默认参考录音</label
                 ><select
                   id="local-reference"
@@ -746,11 +753,22 @@
     </dialog>
     <dialog id="server-voice-dialog" class="server-voice-dialog">
       <form id="server-voice-form">
-        <h2 id="server-voice-title" class="text-h3 pa-4 pb-0 pl-6">注册服务端音色</h2>
+        <h2 id="server-voice-title" class="text-h3 pa-4 pb-0 pl-6">上传服务端音色</h2>
         <div class="dialog-body">
-        <div id="server-register-fields"><label for="server-register-reference">插件参考录音</label><select id="server-register-reference"></select>
-          <label for="server-register-name">持久音色名（可选）</label><input id="server-register-name" maxlength="64" pattern="[A-Za-z0-9_-]*" placeholder="留空仅创建内存缓存" />
-          <small>名称限字母、数字、短横线或下划线；填写后保存 .breeze 文件，同名会覆盖音色，请核对名称。</small></div>
+        <div id="server-register-fields">
+          <label for="server-register-source">录音来源</label><select id="server-register-source"><option value="upload">上传录音</option><option value="reference">已有插件录音</option></select>
+          <div id="server-register-upload">
+            <button id="server-register-pick" type="button" class="secondary">选择参考录音</button>
+            <input id="server-register-file" type="file" accept=".wav,.mp3,.flac,.ogg,audio/wav,audio/mpeg,audio/flac,audio/ogg" hidden />
+            <small id="server-register-filename" role="status"></small>
+            <small>支持 WAV、MP3、FLAC、OGG，最大 20 MiB，时长 0.1–120 秒。</small>
+            <label for="server-register-text">录音文字稿</label><textarea id="server-register-text" rows="3" maxlength="4000" placeholder="填写录音中的完整原话"></textarea>
+          </div>
+          <div id="server-register-existing" hidden><label for="server-register-reference">已有参考录音</label><select id="server-register-reference"></select></div>
+          <label for="server-register-name">服务端音色 ID</label><input id="server-register-name" maxlength="64" placeholder="例如 narrator" />
+          <small>仅用字母、数字、短横线或下划线。保存后重启仍可用。同名 ID 会覆盖原音色。</small>
+          <label class="switch-row"><span>保存后设为当前音色</span><input id="server-register-select" type="checkbox" role="switch" class="switch" /></label>
+        </div>
         <label for="server-voice-description">音色描述</label><textarea id="server-voice-description" rows="3" maxlength="4096"></textarea>
         <label for="server-voice-metadata">元数据（JSON 对象）</label><textarea id="server-voice-metadata" rows="4">{}</textarea>
         <small>描述最多 4096 个 UTF-8 字节；元数据最多 32 项，每个值最多 1024 字节。移除已有字段可删除对应键，或将值设为 null；这些信息不改变合成声音。</small>
@@ -762,7 +780,7 @@
     <dialog id="server-delete-dialog"><h2 class="text-h3 pa-4 pb-0 pl-6">移出服务端内存</h2><p id="server-delete-message" class="dialog-body"></p>
       <div class="dialog-actions"><button id="cancel-server-delete" type="button" variant="text" class="text-button">取消</button><button id="confirm-server-delete" type="button" variant="tonal" class="secondary">确认移出</button></div>
     </dialog>
-    <datalist id="local-addresses"><option value="http://127.0.0.1:8080/v1"></option><option value="http://127.0.0.1:7863/v1"></option><option value="http://127.0.0.1:7860"></option><option value="http://127.0.0.1:7861"></option></datalist>
+    <datalist id="local-addresses"><option value="http://127.0.0.1:8080/v1"></option><option value="http://127.0.0.1:7863/v1"></option></datalist>
     <dialog id="reference-dialog">
       <form id="reference-form">
         <h2 class="text-h3 pa-4 pb-0 pl-6">编辑参考录音</h2>

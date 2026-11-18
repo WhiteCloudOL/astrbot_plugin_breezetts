@@ -17,8 +17,11 @@ let settingsSaving = false;
 let editingPrompt;
 let expressionProfile;
 let editingExpression;
-let serverVoices = [];
 let serverCatalogKey = "";
+let serverCatalog = [];
+let serverCatalogPage = 1;
+let serverCatalogRequest = 0;
+const serverCatalogPageSize = 12;
 let editingServerVoice;
 let removingServerVoice;
 let uploadingSource = false;
@@ -106,18 +109,20 @@ function updateSummary() {
   }
   const cloud = draft.backend === "cloud";
   const hosted = draft.backend === "provider";
-  const cpp = !hosted && !cloud && draft.local.implementation === "cpp";
+  const cpp = draft.backend === "local";
   $("cpp-settings").hidden = !cpp;
   $("server-voices-panel").hidden = !cpp;
   $("conversion-panel").hidden = !cpp;
-  $("local-mode").querySelector('[value="voice"]').disabled = draft.local.implementation !== "cpp";
   $("local-server-voice").disabled = !cpp;
-  $("local-url").placeholder = cpp ? "http://127.0.0.1:8080/v1" : "http://127.0.0.1:7860";
-  if (`${draft.local.implementation}:${draft.local.base_url}` !== localStatusKey)
-    $("local-server-status").textContent = "服务地址或实现已变化，请保存后刷新模型与队列状态。";
-  if (`${draft.local.implementation}:${draft.local.base_url}` !== serverCatalogKey) {
-    serverVoices = [];
-    empty($("server-voices"), "服务地址或实现已切换，请刷新服务端音色。");
+  if (draft.local.base_url !== localStatusKey)
+    $("local-server-status").textContent = "服务地址已变化，请保存后刷新模型与队列状态。";
+  if (draft.local.base_url !== serverCatalogKey) {
+    serverCatalog = [];
+    serverCatalogPage = 1;
+    $("server-voice-search").value = "";
+    $("server-voice-search-row").hidden = true;
+    $("server-voice-pages").hidden = true;
+    empty($("server-voices"), "服务地址已切换，请刷新服务端音色。");
   }
   const backendName = hosted ? "AstrBot TTS" : cloud ? "BreezeBlue 官方" : "本地 API";
   $("provider-settings").hidden = !hosted;
@@ -134,10 +139,10 @@ function updateSummary() {
   $("cloud-voices-panel").hidden = !cloud;
   $("voice-page-title").textContent = hosted ? "AstrBot 提供商音色" : cloud
     ? "BreezeBlue 官方音色"
-    : cpp ? "本地与服务端音色" : "本地参考音色";
+    : "本地与服务端音色";
   $("voice-page-hint").textContent = hosted ? "请在 AstrBot 的 TTS 提供商配置中调整音色和声音参数。" : cloud
     ? "查询账号音色，或创建克隆与设计音色"
-    : cpp ? "管理服务端音色库，或使用插件中的参考录音" : "上传录音、填写准确文字稿，再设为当前音色";
+    : "上传录音并保存为服务端音色，也可使用已有参考录音";
 
   const reference = state.audio.find(
     (item) => item.id === draft.local.reference_id,
@@ -163,7 +168,7 @@ function updateSummary() {
       : "在连接与设置中调整声音描述和 CFG。";
   $("synthesis-hint").textContent = hosted ? "复用 AstrBot TTS · PCM WAV" : cloud
     ? `官方输出 · ${draft.cloud.output_format.toUpperCase()} · ${draft.cloud.delivery}`
-    : cpp ? `C++ · ${draft.local.output_format.toUpperCase()} · 完整接收后试听` : "本地 PCM 自动封装为 WAV";
+    : `C++ · ${draft.local.output_format.toUpperCase()} · 完整接收后试听`;
   $("text-count").textContent =
     `${Array.from($("synthesis-text").value).length} / ${draft.behavior.max_characters}`;
 }
@@ -956,7 +961,9 @@ $("test-connection").addEventListener("click", () =>
     $("connection-result").textContent = "正在检查……";
     try {
       const result = await bridge.apiPost("connection", {});
-      $("connection-result").textContent = result.backend === "provider" ? "提供商配置可用（尚未合成）" : "连接成功";
+      $("connection-result").textContent = result.backend === "provider"
+        ? "提供商配置可用（尚未合成）"
+        : result.voice_id ? "连接成功，已核验官方音色 ID" : "连接成功";
       if (result.models)
         $("models").replaceChildren(
           ...result.models.map(
@@ -1039,24 +1046,52 @@ $("save-preview").addEventListener("click", () =>
     notice("音色已保存并设为当前官方音色。");
   }),
 );
-async function loadServerVoices() {
+async function loadServerVoices(revealId = "") {
   if (dirty) await saveSettings();
-  if (draft.backend !== "local" || draft.local.implementation !== "cpp") throw new Error("请先选择并保存 C++ 服务端。");
-  const key = `${draft.local.implementation}:${draft.local.base_url}`;
+  if (draft.backend !== "local") throw new Error("请先选择并保存 C++ 服务端。");
+  const key = draft.local.base_url;
+  const request = ++serverCatalogRequest;
   const voices = await bridge.apiGet("local/voices");
-  if (`${draft.local.implementation}:${draft.local.base_url}` !== key || draft.backend !== "local") return;
-  serverVoices = voices;
+  if (request !== serverCatalogRequest || draft.local.base_url !== key || draft.backend !== "local") return;
   serverCatalogKey = key;
+  serverCatalog = voices.map(voice => ({
+    voice,
+    searchText: [voice.id, voice.metadata.name, voice.description, voice.ref_text]
+      .join(" ").normalize("NFKC").toLowerCase(),
+  }));
+  if (revealId) {
+    const index = serverCatalog.findIndex(({voice}) => voice.id === revealId);
+    $("server-voice-search").value = "";
+    serverCatalogPage = Math.floor(Math.max(index, 0) / serverCatalogPageSize) + 1;
+  }
+  renderServerVoices();
+}
+
+function renderServerVoices() {
+  const terms = $("server-voice-search").value.normalize("NFKC").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const matches = terms.length
+    ? serverCatalog.filter(({searchText}) => terms.every(term => searchText.includes(term)))
+    : serverCatalog;
+  const pageCount = Math.max(1, Math.ceil(matches.length / serverCatalogPageSize));
+  serverCatalogPage = Math.min(pageCount, Math.max(1, serverCatalogPage));
+  const start = (serverCatalogPage - 1) * serverCatalogPageSize;
+  $("server-voice-search-row").hidden = serverCatalog.length === 0;
+  $("server-voice-pages").hidden = serverCatalog.length === 0;
+  $("server-voice-prev").disabled = serverCatalogPage === 1;
+  $("server-voice-next").disabled = serverCatalogPage === pageCount;
+  $("server-voice-page-info").textContent = terms.length
+    ? `第 ${serverCatalogPage} / ${pageCount} 页 · 匹配 ${matches.length} / ${serverCatalog.length} 个音色`
+    : `第 ${serverCatalogPage} / ${pageCount} 页 · 共 ${matches.length} 个音色`;
   $("server-voices").replaceChildren();
-  if (!voices.length) empty($("server-voices"), "服务端暂无音色，可用插件参考录音注册缓存或持久音色。");
-  for (const voice of voices) {
+  if (!matches.length) empty($("server-voices"), terms.length ? "没有匹配的服务端音色。" : "服务端暂无音色。点击“上传音色”添加参考录音。");
+  for (const {voice} of matches.slice(start, start + serverCatalogPageSize)) {
     const card = document.createElement("article");
     card.className = "voice-card";
     card.dataset.serverVoiceId = voice.id;
     const title = document.createElement("strong");
-    title.textContent = voice.id;
+    title.textContent = voice.metadata.name?.trim() || voice.id;
     const meta = document.createElement("small");
-    meta.textContent = `${voice.saved ? "持久音色" : "内存缓存"} · ${voice.seconds} 秒 · 编码 ${voice.encode_ms} ms`;
+    meta.textContent = `${title.textContent !== voice.id ? voice.id + " · " : ""}${voice.saved ? "持久音色" : "内存缓存"} · ${voice.seconds} 秒 · 编码 ${voice.encode_ms} ms`;
     const description = document.createElement("p");
     description.textContent = voice.description || voice.ref_text || "未填写音色描述";
     const use = button("使用此音色", async () => {
@@ -1065,7 +1100,7 @@ async function loadServerVoices() {
       $("conversion-voice").value = voice.id;
       markDirty();
       await saveSettings();
-      await loadServerVoices();
+      renderServerVoices();
       notice("已使用服务端音色，无需反复上传参考录音。");
     }, "primary");
     const selected = draft.local.mode === "voice" && draft.local.voice_id === voice.id;
@@ -1091,16 +1126,41 @@ async function loadServerVoices() {
   }
 }
 $("refresh-server-voices").addEventListener("click", () => action($("refresh-server-voices"), loadServerVoices));
+$("server-voice-search").addEventListener("input", () => {
+  serverCatalogPage = 1;
+  renderServerVoices();
+});
+for (const [id, direction] of [["server-voice-prev", -1], ["server-voice-next", 1]]) {
+  $(id).addEventListener("click", () => {
+    serverCatalogPage += direction;
+    renderServerVoices();
+  });
+}
+$("server-register-source").addEventListener("change", () => {
+  const upload = $("server-register-source").value === "upload";
+  $("server-register-upload").hidden = !upload;
+  $("server-register-existing").hidden = upload;
+});
+$("server-register-pick").addEventListener("click", () => $("server-register-file").click());
+$("server-register-file").addEventListener("change", () => {
+  $("server-register-filename").textContent = $("server-register-file").files[0]?.name || "";
+});
 $("register-server-voice").addEventListener("click", () => action($("register-server-voice"), async () => {
   if (dirty) await saveSettings();
   editingServerVoice = {server_url: draft.local.base_url};
-  $("server-voice-title").textContent = "注册服务端音色";
+  $("server-voice-title").textContent = "上传服务端音色";
   $("server-register-fields").hidden = false;
+  $("server-register-source").value = "upload";
+  $("server-register-source").dispatchEvent(new Event("change"));
+  $("server-register-file").value = "";
+  $("server-register-filename").textContent = "";
+  $("server-register-text").value = "";
   $("server-register-reference").value = draft.local.reference_id;
-  $("server-register-name").value = "";
+  $("server-register-name").value = "voice_" + Array.from(crypto.getRandomValues(new Uint8Array(6)), byte => byte.toString(16).padStart(2, "0")).join("");
+  $("server-register-select").checked = !draft.local.voice_id;
   $("server-voice-description").value = "";
   $("server-voice-metadata").value = "{}";
-  $("server-voice-progress").textContent = "参考录音编码可能排队，请等待任务完成。";
+  $("server-voice-progress").textContent = "";
   $("server-voice-dialog").showModal();
 }));
 $("server-voice-form").addEventListener("submit", event => {
@@ -1113,20 +1173,63 @@ $("server-voice-form").addEventListener("submit", event => {
     const metadata = Object.assign(Object.create(null), decoded);
     if (target.id) for (const key of Object.keys(target.metadata)) if (!(key in metadata)) metadata[key] = null;
     const payload = {id: target.id, server_url: target.server_url, description: $("server-voice-description").value, metadata};
+    const upload = !target.id && $("server-register-source").value === "upload";
+    const file = upload ? $("server-register-file").files[0] : null;
+    if (!target.id) {
+      const name = $("server-register-name").value.trim();
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) throw new Error("请输入有效的服务端音色 ID（1–64 位字母、数字、短横线或下划线）。");
+      Object.assign(payload, {operation: "register", name});
+      if (upload) {
+        if (!file || !file.size || file.size > 20 * 1024 * 1024) throw new Error("请选择不超过 20 MiB 的参考录音。");
+        payload.ref_text = $("server-register-text").value.trim();
+        if (!payload.ref_text) throw new Error("请填写录音的准确文字稿。");
+      } else {
+        payload.reference_id = $("server-register-reference").value;
+        if (!state.audio.find(item => item.id === payload.reference_id && item.ref_text?.trim())) {
+          throw new Error("请选择已填写准确文字稿的参考录音。");
+        }
+      }
+    }
+    const selectVoice = !target.id && $("server-register-select").checked;
     const fields = [...$("server-voice-form").querySelectorAll("input, select, textarea")];
     fields.forEach(field => { field.disabled = true; });
+    $("server-register-pick").disabled = true;
     $("cancel-server-voice").disabled = true;
     $("server-voice-dialog").dataset.busy = "true";
     try {
-    if (target.id) await bridge.apiPost("local/voice", {...payload, operation: "edit"});
-    else await runJob("local_voice", {...payload, operation: "register", reference_id: $("server-register-reference").value, name: $("server-register-name").value},
-      () => { $("server-voice-progress").textContent = "正在排队或编码参考音色……"; }, $("cancel-server-registration"));
-    if (editingServerVoice !== target) return;
-    $("server-voice-dialog").close();
-    if (draft.local.base_url === target.server_url && draft.backend === "local") await loadServerVoices();
-    notice("服务端音色信息已保存。");
+      let registered;
+      if (target.id) {
+        await bridge.apiPost("local/voice", {...payload, operation: "edit"});
+      } else {
+        if (upload) {
+          $("server-voice-progress").textContent = "正在上传参考录音……";
+          const staged = await bridge.upload("jobs/submit", file);
+          payload.upload_id = staged.upload_id;
+        }
+        registered = await runJob("local_voice", payload,
+          () => { $("server-voice-progress").textContent = "正在排队或编码参考音色……"; }, $("cancel-server-registration"));
+      }
+      if (editingServerVoice !== target) return;
+      $("server-voice-dialog").close();
+      const saved = registered ? `音色 ${registered.id} 已保存到服务端。` : "服务端音色信息已保存。";
+      try {
+        if (draft.local.base_url === target.server_url && draft.backend === "local") {
+          if (registered && selectVoice) {
+            draft.local.mode = "voice";
+            draft.local.voice_id = registered.id;
+            markDirty();
+            await saveSettings();
+          }
+          await loadServerVoices(registered?.id);
+        }
+      } catch (error) {
+        notice(saved + " " + error.message, true);
+        return;
+      }
+      notice(saved);
     } finally {
       fields.forEach(field => { field.disabled = false; });
+      $("server-register-pick").disabled = false;
       $("cancel-server-voice").disabled = false;
       delete $("server-voice-dialog").dataset.busy;
     }
@@ -1156,17 +1259,9 @@ $("refresh-local-status").addEventListener("click", () => action($("refresh-loca
   const url = draft.local.base_url;
   const result = await bridge.apiGet("local/status");
   if (draft.local.base_url !== url) return;
-  localStatusKey = `${draft.local.implementation}:${url}`;
+  localStatusKey = url;
   $("local-server-status").textContent = `${result.model ? `${result.model.model} · ${result.model.backend}` : "模型信息未提供"} · ${result.health.sample_rate} Hz · ${result.queue ? `占用 ${result.queue.active}/${result.queue.capacity} 槽位，等待 ${result.queue.waiting} 条` : "此服务未提供队列状态接口"}`;
 }));
-$("local-implementation").addEventListener("change", () => {
-  if (draft.local.implementation !== "cpp" && draft.local.mode === "voice") {
-    draft.local.mode = "reference";
-    $("local-mode").value = "reference";
-  }
-  $("local-server-status").textContent = "服务实现已切换，请保存后重新查询。";
-  markDirty();
-});
 $("upload-conversion-source").addEventListener("click", () => { uploadingSource = true; $("upload").click(); });
 $("upload").addEventListener("cancel", () => { uploadingSource = false; });
 $("conversion-panel").addEventListener("submit", event => {

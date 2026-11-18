@@ -6,8 +6,6 @@ import asyncio
 import base64
 import json
 import logging
-import re
-import secrets
 import uuid
 from contextvars import ContextVar
 from urllib.parse import quote
@@ -178,67 +176,9 @@ class BreezeClient:
         parent = SYNTHESIS_ID.get()
         request_id = (parent + "." if parent else "") + uuid.uuid4().hex[:8]
         if config["backend"] == "local":
-            connection = config["local"]
-            if connection["implementation"] == "cpp":
-                return await self.cpp.synthesize(
-                    connection, text, reference, request_id
-                )
-            if not connection["instruction"].strip() and connection["cfg_scale"] != 1:
-                raise BreezeError(
-                    "普通朗读与纯音色复刻请将 CFG 设为 1；使用更高 CFG 时请填写声音或语气描述。"
-                )
-            form = aiohttp.FormData()
-            payload = {
-                "text": text,
-                "instruction": connection["instruction"],
-                "cfg_scale": connection["cfg_scale"],
-                "seed": secrets.randbits(32)
-                if connection["random_seed"]
-                else connection["seed"],
-            }
-            for key, value in payload.items():
-                form.add_field(key, str(value))
-            if connection["mode"] == "reference":
-                if reference is None or not reference[1].strip():
-                    raise BreezeError("请上传参考录音、填写准确文字稿并设为默认音色。")
-                form.add_field(
-                    "ref_audio",
-                    reference[0],
-                    filename="reference.wav",
-                    content_type="audio/wav",
-                )
-                form.add_field("ref_text", reference[1])
-            elif (
-                connection["mode"] == "design" and not connection["instruction"].strip()
-            ):
-                raise BreezeError("声音设计模式需要填写声音描述。")
-            self.logger.info(
-                "Breeze synthesis payload (request_id=%s, backend=local, payload=%r, reference_text=%r, reference_bytes=%s).",
-                request_id,
-                payload,
-                reference[1] if reference else "",
-                len(reference[0]) if reference else 0,
+            return await self.cpp.synthesize(
+                config["local"], text, reference, request_id
             )
-            raw, headers, _ = await self.request(
-                connection,
-                "POST",
-                "audio/speech",
-                raw=True,
-                data=form,
-                request_id=request_id,
-            )
-            if headers.get("Content-Type", "").split(";")[0] not in {
-                "audio/pcm",
-                "application/octet-stream",
-                "binary/octet-stream",
-            }:
-                raise BreezeError("本地服务应返回 PCM，请检查是否误选了官方接口。")
-            rate = headers.get("X-Sample-Rate", "24000")
-            if headers.get("X-Sample-Format", "s16le") != "s16le" or not re.fullmatch(
-                r"[0-9]{4,5}", rate
-            ):
-                raise BreezeError("本地服务返回了无效的 PCM 格式或采样率。")
-            return playable_audio(raw, "pcm", int(rate))
         connection = config["cloud"]
         if (
             connection["delivery"] == "stream"
@@ -317,6 +257,7 @@ class BreezeClient:
                     "pending",
                     "running",
                     "processing",
+                    "streaming",
                 }:
                     raise BreezeError(
                         "官方后台任务未成功完成，请在官方控制台查看详情。"

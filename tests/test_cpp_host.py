@@ -12,6 +12,54 @@ pytest.importorskip("astrbot")
 from test_host import host_http, loaded_plugin  # noqa: E402,F401
 
 
+async def test_uploaded_server_voice_registration_is_single_use(
+    host_http, server, wav_audio
+):
+    client, auth, plugin, _ = host_http
+    root = "/api/v1/plugins/extensions/astrbot_plugin_breezetts/"
+    calls = []
+
+    async def upstream(request):
+        assert request.method == "POST" and request.path == "/v1/voices"
+        assert request.headers["Authorization"] == "Bearer voice-upload-test"
+        form = await request.post()
+        calls.append(form["name"])
+        assert form["ref_audio"].file.read() == wav_audio
+        assert form["ref_text"] == "准确文字稿。"
+        return web.json_response(
+            {"id": form["name"], "name": form["name"], "saved": True}
+        )
+
+    url = await server(upstream)
+    plugin.config["local"].update(base_url=url, api_key="voice-upload-test")
+    upload = {"file": ("voice.wav", wav_audio, "audio/wav")}
+    assert (await client.post(root + "jobs/submit", files=upload)).status_code == 401
+    staged = await client.post(root + "jobs/submit", headers=auth, files=upload)
+    assert staged.status_code == 200 and not calls
+    payload = {
+        "operation": "local_voice",
+        "payload": {
+            "upload_id": staged.json()["upload_id"],
+            "name": "uploaded_voice",
+            "ref_text": "准确文字稿。",
+            "server_url": url,
+        },
+    }
+    submitted = await client.post(root + "jobs/submit", headers=auth, json=payload)
+    assert submitted.status_code == 200
+    job_id = submitted.json()["id"]
+    task = plugin.service.tasks.get(job_id)
+    if task:
+        await asyncio.wait_for(task, 3)
+    result = await client.get(root + "jobs/status", headers=auth, params={"id": job_id})
+    assert result.json()["result"]["saved"] is True
+    assert calls == ["uploaded_voice"]
+    assert not plugin.service.store.items and not plugin.service.voice_uploads
+    assert (
+        await client.post(root + "jobs/submit", headers=auth, json=payload)
+    ).status_code == 400
+
+
 async def test_cpp_voice_and_conversion_jobs_through_authenticated_bridge(
     host_http, server, wav_audio
 ):
@@ -122,10 +170,12 @@ async def test_cpp_voice_and_conversion_jobs_through_authenticated_bridge(
     ).status_code == 400
 
 
-async def test_cpp_cancel_job_and_python_capability_guard(host_http, server):
+async def test_cpp_cancel_job_and_nonlocal_capability_guard(host_http, server):
     client, auth, plugin, _ = host_http
     root = "/api/v1/plugins/extensions/astrbot_plugin_breezetts/"
+    plugin.config["backend"] = "cloud"
     assert (await client.get(root + "local/status", headers=auth)).status_code == 400
+    plugin.config["backend"] = "local"
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def upstream(_request):

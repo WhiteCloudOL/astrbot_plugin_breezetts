@@ -110,7 +110,7 @@ class WorkbenchAPI:
     async def local_status(self):
         """Read saved C++ connection, model, and optional queue status."""
         config = self.service.settings()
-        if config["backend"] != "local" or config["local"]["implementation"] != "cpp":
+        if config["backend"] != "local":
             raise BreezeError("请先选择并保存 Breeze-TTS-2.cpp 服务端。")
         return json_response(await asyncio.wait_for(self.service.connection(), 30))
 
@@ -118,7 +118,7 @@ class WorkbenchAPI:
     async def local_voices(self):
         """Read the saved C++ server catalog or one voice."""
         config = self.service.settings()
-        if config["backend"] != "local" or config["local"]["implementation"] != "cpp":
+        if config["backend"] != "local":
             raise BreezeError("请先选择并保存 Breeze-TTS-2.cpp 服务端。")
         return json_response(
             await asyncio.wait_for(
@@ -173,6 +173,9 @@ class WorkbenchAPI:
     @web_errors
     async def submit(self):
         """Start a synthesis, clone, or design job without blocking the bridge."""
+        if (request.content_type or "").startswith("multipart/form-data"):
+            data, _ = await self.read_recording()
+            return json_response(self.service.stage_voice_upload(data))
         payload = await request.json(default={})
         if not isinstance(payload, dict):
             raise BreezeError("任务请求须为 JSON 对象。")
@@ -201,7 +204,21 @@ class WorkbenchAPI:
     @web_errors
     async def upload(self):
         """Read a bounded recording and normalize it for both Breeze services."""
-        await self.service.start()
+        data, filename = await self.read_recording()
+        async with self.service.lock:
+            assert self.service.store is not None
+            item = await self.service.io(self.service.store.upload, data, filename)
+        return json_response(item)
+
+    async def read_recording(self) -> tuple[bytes, str]:
+        """Read the bridge's file field with the recording size limit.
+
+        Returns:
+            Recording bytes and the original filename.
+
+        Raises:
+            BreezeError: If the recording is missing or exceeds the limit.
+        """
         upload = (await request.files()).get("file")
         if upload is None:
             raise BreezeError("请选择要上传的参考录音。")
@@ -210,14 +227,7 @@ class WorkbenchAPI:
             data.extend(chunk)
             if len(data) > UPLOAD_LIMIT:
                 raise BreezeError("参考录音超过 20 MiB 上限。")
-        async with self.service.lock:
-            assert self.service.store is not None
-            item = await self.service.io(
-                self.service.store.upload,
-                bytes(data),
-                upload.filename or "reference.wav",
-            )
-        return json_response(item)
+        return bytes(data), upload.filename or "reference.wav"
 
     @web_errors
     async def reference(self):
