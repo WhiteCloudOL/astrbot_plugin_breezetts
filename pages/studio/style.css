@@ -500,6 +500,11 @@ small {
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
   gap: 12px;
 }
+.catalog-pages {
+  margin-top: 12px;
+  align-items: center;
+  justify-content: center;
+}
 .reference-card,
 .voice-card {
   background: var(--surface);
@@ -1254,6 +1259,9 @@ dialog {
 .server-voice-dialog .dialog-actions {
   flex-shrink: 0;
   flex-wrap: wrap;
+}
+#server-register-filename {
+  overflow-wrap: anywhere;
 }
 #server-delete-message {
   overflow-wrap: anywhere;

@@ -138,7 +138,13 @@ class CppAPI:
                 validate_identifier(identifier, label="服务端音色 ID", limit=64),
                 safe="",
             )
-        result = await self.client.request(connection, "GET", path)
+        # C++ returns the complete catalog. Allow a larger bounded list for local search.
+        result = await self.client.request(
+            connection,
+            "GET",
+            path,
+            max_json_bytes=(2 if identifier else 16) * 1024 * 1024,
+        )
         if identifier:
             return voice_info(result)
         if not isinstance(result, list):
@@ -172,10 +178,19 @@ class CppAPI:
             or not isinstance(payload, dict)
         ):
             raise BreezeError("服务端音色操作无效。")
-        identifier = payload.get("id", "")
-        if operation != "register":
+        name = ""
+        if operation == "register":
+            name = payload.get("name", "")
+            if not isinstance(name, str) or (
+                name and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name)
+            ):
+                raise BreezeError(
+                    "持久音色名须为 1–64 个字母、数字、短横线或下划线；留空创建内存缓存。"
+                )
+            identifier = name
+        else:
             identifier = validate_identifier(
-                identifier, label="服务端音色 ID", limit=64
+                payload.get("id", ""), label="服务端音色 ID", limit=64
             )
             if not re.fullmatch(r"[A-Za-z0-9_-]+", identifier):
                 raise BreezeError("服务端音色 ID 格式无效。")
@@ -214,13 +229,6 @@ class CppAPI:
             identifier,
         )
         if operation == "register":
-            name = payload.get("name", "")
-            if not isinstance(name, str) or (
-                name and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name)
-            ):
-                raise BreezeError(
-                    "持久音色名须为 1–64 个字母、数字、短横线或下划线；留空创建内存缓存。"
-                )
             if reference is None or not reference[1].strip():
                 raise BreezeError("注册音色需要参考录音和准确文字稿。")
             form = aiohttp.FormData()
@@ -256,7 +264,14 @@ class CppAPI:
             ):
                 raise BreezeError("移除音色的响应格式无效。")
             return {"deleted": identifier, "file_kept": result["file_kept"]}
-        return voice_info(result)
+        voice = voice_info(result)
+        if (
+            operation == "register"
+            and name
+            and (voice["id"] != name or not voice["saved"])
+        ):
+            raise BreezeError("服务端未确认已保存指定音色，请刷新音色库核对。")
+        return voice
 
     async def synthesize(self, connection: dict, text: str, reference, request_id: str):
         """Use native form/PCM or OpenAI JSON formats with the same sampling controls.
@@ -296,6 +311,10 @@ class CppAPI:
         if connection["split_chars"] >= 0:
             payload["split_chars"] = connection["split_chars"]
         if connection["mode"] == "voice":
+            if not connection["voice_id"]:
+                raise BreezeError(
+                    "请在音色管理中上传录音并保存到服务端，或选择已有服务端音色。"
+                )
             payload["voice_id"] = validate_identifier(
                 connection["voice_id"], label="服务端音色 ID", limit=64
             )
@@ -349,6 +368,7 @@ class CppAPI:
         fmt = {
             "audio/pcm": "pcm",
             "application/octet-stream": "pcm",
+            "binary/octet-stream": "pcm",
             "audio/wav": "wav",
             "audio/x-wav": "wav",
             "audio/mpeg": "mp3",

@@ -53,10 +53,9 @@ PROMPT_VARIABLES = {
 DEFAULTS = {
     "backend": "local",
     "local": {
-        "implementation": "python",
-        "base_url": "http://127.0.0.1:7860",
+        "base_url": "http://127.0.0.1:8080/v1",
         "api_key": "",
-        "mode": "reference",
+        "mode": "voice",
         "reference_id": "",
         "voice_id": "",
         "output_format": "pcm",
@@ -260,6 +259,19 @@ def validate_config(value: dict) -> dict:
     for group, default in DEFAULTS.items():
         if isinstance(default, dict):
             incoming = value.get(group, {})
+            if (
+                group == "local"
+                and isinstance(incoming, dict)
+                and "implementation" in incoming
+            ):
+                if incoming["implementation"] not in ("python", "cpp"):
+                    raise BreezeError("旧版服务端实现配置无效。")
+                # Keep the saved address and mode while retiring the implementation selector.
+                incoming = {
+                    key: item
+                    for key, item in incoming.items()
+                    if key != "implementation"
+                }
             if not isinstance(incoming, dict) or set(incoming) - set(default):
                 raise BreezeError(f"{group} 配置包含未知字段或格式不正确。")
             result[group].update(incoming)
@@ -351,12 +363,8 @@ def validate_config(value: dict) -> dict:
             raise BreezeError(
                 f"{name} 须为不超过 6000 字符的提示词，不能包含无效控制字符。"
             )
-    if local["implementation"] not in {"python", "cpp"}:
-        raise BreezeError("本地服务端须选择 Python API 或 Breeze-TTS-2.cpp。")
     if local["mode"] not in {"reference", "design", "plain", "voice"}:
         raise BreezeError("本地合成模式无效。")
-    if local["mode"] == "voice" and local["implementation"] != "cpp":
-        raise BreezeError("服务端音色模式需要 Breeze-TTS-2.cpp。")
     if local["voice_id"] and not re.fullmatch(
         r"[A-Za-z0-9_-]{1,64}", local["voice_id"]
     ):

@@ -12,24 +12,14 @@
   },
   "local": {
     "type": "object",
-    "description": "本地 API",
-    "hint": "兼容开源服务及启用 Bearer 鉴权的部署。",
+    "description": "本地 API（Breeze-TTS-2.cpp）",
+    "hint": "兼容原项目与启用 Bearer 鉴权的部署。",
     "items": {
-      "implementation": {
-        "type": "string",
-        "description": "服务端实现",
-        "default": "python",
-        "hint": "python 保持原 API；cpp 兼容 HoppouAI 原项目及 WhiteCloudOL 鉴权/FIFO fork。",
-        "options": [
-          "python",
-          "cpp"
-        ]
-      },
       "base_url": {
         "type": "string",
         "description": "服务地址",
         "hint": "支持根地址、/v1 或完整合成地址。C++ 原版示例 http://127.0.0.1:8080/v1；鉴权 fork 示例 http://127.0.0.1:7863/v1。",
-        "default": "http://127.0.0.1:7860"
+        "default": "http://127.0.0.1:8080/v1"
       },
       "api_key": {
         "type": "string",
@@ -42,12 +32,12 @@
         "type": "string",
         "description": "合成模式",
         "hint": "reference 使用插件录音；voice 使用 C++ 服务端音色 ID；design 使用声音描述；plain 普通朗读。",
-        "default": "reference",
+        "default": "voice",
         "options": [
+          "voice",
           "reference",
           "design",
-          "plain",
-          "voice"
+          "plain"
         ]
       },
       "reference_id": {

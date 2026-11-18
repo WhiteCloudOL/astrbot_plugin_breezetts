@@ -26,6 +26,59 @@ MIME = {
 }
 
 
+def normalize_recording(data: bytes) -> tuple[bytes, float, int]:
+    """Decode bounded reference audio for storage or server registration.
+
+    Args:
+        data: Uploaded WAV, MP3, FLAC, or OGG bytes.
+
+    Returns:
+        Mono PCM WAV bytes, duration in seconds, and sample rate.
+
+    Raises:
+        BreezeError: If the recording is unsupported, oversized, or corrupt.
+    """
+    if not data or len(data) > UPLOAD_LIMIT:
+        raise BreezeError("请上传不超过 20 MiB 的 WAV、MP3、FLAC 或 OGG 音频。")
+    try:
+        with sf.SoundFile(io.BytesIO(data)) as audio:
+            if audio.format not in {"WAV", "WAVEX", "MP3", "FLAC", "OGG"}:
+                raise BreezeError("请上传 WAV、MP3、FLAC 或 OGG 音频。")
+            duration = audio.frames / audio.samplerate
+            if (
+                not 0.1 <= duration <= 120
+                or not 1 <= audio.channels <= 2
+                or not 8000 <= audio.samplerate <= 192000
+            ):
+                raise BreezeError("参考录音须为 0.1–120 秒的单声道或双声道音频。")
+            if (
+                audio.frames * 2 + 44 > UPLOAD_LIMIT
+                or audio.frames * audio.channels * 4 > AUDIO_LIMIT
+            ):
+                raise BreezeError("解码后的录音超过大小上限，请缩短录音或降低采样率。")
+            # Decode the bounded recording to detect corrupt/truncated uploads.
+            samples = audio.read(dtype="float32", always_2d=True)
+            if len(samples) != audio.frames:
+                raise BreezeError("音频不完整，无法读取全部采样。")
+            if not math.isfinite(float(samples.max())) or not math.isfinite(
+                float(samples.min())
+            ):
+                raise BreezeError("录音包含无效采样，请重新导出音频。")
+            normalized = io.BytesIO()
+            sf.write(
+                normalized,
+                samples.mean(axis=1),
+                audio.samplerate,
+                format="WAV",
+                subtype="PCM_16",
+            )
+            return normalized.getvalue(), round(duration, 3), audio.samplerate
+    except (sf.LibsndfileError, RuntimeError, ValueError) as exc:
+        if isinstance(exc, BreezeError):
+            raise
+        raise BreezeError("音频文件损坏或无法解码，请重新导出录音。") from None
+
+
 def playable_audio(data: bytes, fmt: str, rate: int = 24000) -> tuple[bytes, str]:
     """Validate binary audio and wrap signed mono PCM in a WAV container.
 
@@ -236,55 +289,16 @@ class AudioStore:
         """
         if sum(item["kind"] == "reference" for item in self.items.values()) >= 100:
             raise BreezeError("参考录音已达 100 条，请先删除不需要的录音。")
-        if not data or len(data) > UPLOAD_LIMIT:
-            raise BreezeError("请上传不超过 20 MiB 的 WAV、MP3、FLAC 或 OGG 音频。")
-        try:
-            with sf.SoundFile(io.BytesIO(data)) as audio:
-                if audio.format not in {"WAV", "WAVEX", "MP3", "FLAC", "OGG"}:
-                    raise BreezeError("请上传 WAV、MP3、FLAC 或 OGG 音频。")
-                duration = audio.frames / audio.samplerate
-                if (
-                    not 0.1 <= duration <= 120
-                    or not 1 <= audio.channels <= 2
-                    or not 8000 <= audio.samplerate <= 192000
-                ):
-                    raise BreezeError("参考录音须为 0.1–120 秒的单声道或双声道音频。")
-                if (
-                    audio.frames * 2 + 44 > UPLOAD_LIMIT
-                    or audio.frames * audio.channels * 4 > AUDIO_LIMIT
-                ):
-                    raise BreezeError(
-                        "解码后的录音超过大小上限，请缩短录音或降低采样率。"
-                    )
-                # Decode the bounded recording to detect corrupt/truncated uploads.
-                samples = audio.read(dtype="float32", always_2d=True)
-                if len(samples) != audio.frames:
-                    raise BreezeError("音频不完整，无法读取全部采样。")
-                if not math.isfinite(float(samples.max())) or not math.isfinite(
-                    float(samples.min())
-                ):
-                    raise BreezeError("录音包含无效采样，请重新导出音频。")
-                normalized = io.BytesIO()
-                sf.write(
-                    normalized,
-                    samples.mean(axis=1),
-                    audio.samplerate,
-                    format="WAV",
-                    subtype="PCM_16",
-                )
-                return self.add(
-                    normalized.getvalue(),
-                    "wav",
-                    "reference",
-                    Path(filename.replace("\\", "/")).name,
-                    duration=round(duration, 3),
-                    sample_rate=audio.samplerate,
-                    ref_text="",
-                )
-        except (sf.LibsndfileError, RuntimeError, ValueError) as exc:
-            if isinstance(exc, BreezeError):
-                raise
-            raise BreezeError("音频文件损坏或无法解码，请重新导出录音。") from None
+        wav, duration, rate = normalize_recording(data)
+        return self.add(
+            wav,
+            "wav",
+            "reference",
+            Path(filename.replace("\\", "/")).name,
+            duration=duration,
+            sample_rate=rate,
+            ref_text="",
+        )
 
     def remove(self, audio_id: str) -> None:
         """Delete one indexed audio file and its metadata.
