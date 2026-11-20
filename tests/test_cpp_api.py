@@ -4,6 +4,7 @@ import asyncio
 import copy
 import io
 import wave
+from urllib.parse import quote
 
 import pytest
 import soundfile as sf
@@ -302,6 +303,68 @@ async def test_cpp_voice_register_edit_lookup_and_unload(
         await client.close()
 
 
+async def test_cpp_scoped_voice_id_round_trips(
+    cpp_config, server, wav_audio, server_voice
+):
+    scoped_id = f"new-api/{'a' * 64}/{'n' * 64}"
+    scoped = dict(server_voice, id=scoped_id, name="Narrator (New API aaaaaaaa)")
+    pcm = wav_audio[44:]
+
+    async def handler(request):
+        if request.path == "/v1/voices":
+            return web.json_response([server_voice, scoped])
+        if request.path.startswith("/v1/voices/"):
+            assert request.raw_path == "/v1/voices/" + quote(scoped_id, safe="")
+            if request.method == "PATCH":
+                scoped.update(await request.json())
+            if request.method == "DELETE":
+                return web.json_response({"deleted": scoped_id, "file_kept": False})
+            return web.json_response(scoped)
+        if (
+            request.path == "/v1/audio/speech"
+            and request.content_type == "application/json"
+        ):
+            assert (await request.json())["voice"] == scoped_id
+            return web.Response(body=wav_audio, content_type="audio/wav")
+        assert request.path in {"/v1/audio/speech", "/v1/audio/convert"}
+        assert (await request.post())["voice_id"] == scoped_id
+        return web.Response(body=pcm, content_type="audio/pcm")
+
+    cpp_config["local"]["base_url"] = await server(handler)
+    client = BreezeClient()
+    try:
+        catalog = await client.cpp.voices(cpp_config["local"])
+        assert [voice["id"] for voice in catalog] == ["narrator", scoped_id]
+        assert catalog[1]["name"] == scoped["name"]
+        cpp_config["local"]["voice_id"] = catalog[1]["id"]
+        connection = validate_config(cpp_config)["local"]
+        assert (await client.cpp.voices(connection, scoped_id))["id"] == scoped_id
+        for format in ("pcm", "wav"):
+            connection["output_format"] = format
+            audio, extension = await client.cpp.synthesize(
+                connection, "你好。", None, "test"
+            )
+            assert audio and extension == "wav"
+        converted, extension = await client.cpp.convert(
+            connection, {"voice_id": scoped_id}, wav_audio
+        )
+        assert converted and extension == "wav"
+        edited = await client.cpp.voice(
+            connection, "edit", {"id": scoped_id, "description": "New title"}
+        )
+        assert edited["description"] == "New title"
+        assert await client.cpp.voice(connection, "remove", {"id": scoped_id}) == {
+            "deleted": scoped_id,
+            "file_kept": False,
+        }
+        with pytest.raises(BreezeError):
+            await client.cpp.voice(
+                connection, "register", {"name": scoped_id}, (wav_audio, "Reference")
+            )
+    finally:
+        await client.close()
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -432,6 +495,9 @@ async def test_cpp_metadata_edit_remains_available_while_audio_is_generating(
         ("split_chars", -2),
         ("top_k", 1.5),
         ("voice_id", "../voice"),
+        ("voice_id", f"new-api/{'a' * 64}/../voice"),
+        ("voice_id", f"new-api/{'a' * 63}/narrator"),
+        ("voice_id", f"new-api/{'a' * 64}/voice%2fescape"),
         ("output_format", "opus"),
     ],
 )

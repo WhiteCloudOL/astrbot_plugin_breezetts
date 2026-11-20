@@ -144,6 +144,8 @@ The editor supports descriptions (up to 4096 UTF-8 bytes) and up to 32 string me
 The server catalog shows 12 voices per page. Search matches IDs, names, descriptions and transcripts across the refreshed catalog. Searching and changing pages reuse that snapshot.
 
 ![C++ server catalog](../images/voices-cpp-desktop.png)
+
+The authenticated direct API of the WhiteCloudOL fork can include voices uploaded by New API users. Select a voice from the refreshed catalog or paste the full ID returned by the server. Voices with the same name in different accounts remain separate and can each be selected for synthesis or conversion.
 ![Mobile server catalog](../images/voices-cpp-mobile.png)
 ![Server voice editor](../images/server-voice-dialog-desktop.png)
 ![Mobile voice editor](../images/server-voice-dialog-mobile.png)

@@ -135,6 +135,8 @@ CosyVoice 的 `v3-plus` 自定义音色不支持指令；`v3-flash`、`v3.5-plus
 
 刷新后每页显示 12 条服务端音色。搜索可按 ID、名称、描述或文字稿匹配整个目录，切页和搜索共用同一次刷新结果。
 
+通过 WhiteCloudOL fork 的鉴权直连 API 可以同步 New API 用户上传的音色。选择列表中的音色，或粘贴服务端返回的完整 ID。不同账户的同名音色会各自显示，保存后可用于合成和语音转换。
+
 ![C++ 服务端音色库](../images/voices-cpp-desktop.png)
 ![手机服务端音色库](../images/voices-cpp-mobile.png)
 ![注册与编辑音色弹窗](../images/server-voice-dialog-desktop.png)

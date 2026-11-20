@@ -198,6 +198,26 @@ def validate_identifier(value: object, label: str, limit: int = 500) -> str:
     return value
 
 
+def validate_cpp_voice_id(value: object, label: str = "服务端音色 ID") -> str:
+    """Validate a C++ voice selection, including the fork's direct API IDs.
+
+    Args:
+        value: Voice ID returned by the server or supplied by a client.
+        label: Safe field label used in validation errors.
+
+    Returns:
+        The unchanged voice ID.
+
+    Raises:
+        BreezeError: If the ID has neither supported format.
+    """
+    if not isinstance(value, str) or not re.fullmatch(
+        r"(?:new-api/[a-f0-9]{64}/)?[A-Za-z0-9_-]{1,64}", value
+    ):
+        raise BreezeError(f"{label} 无效，请检查配置或服务响应。")
+    return value
+
+
 def api_root(base_url: str) -> str:
     """Normalize a service root while retaining reverse proxy path prefixes.
 
@@ -365,10 +385,8 @@ def validate_config(value: dict) -> dict:
             )
     if local["mode"] not in {"reference", "design", "plain", "voice"}:
         raise BreezeError("本地合成模式无效。")
-    if local["voice_id"] and not re.fullmatch(
-        r"[A-Za-z0-9_-]{1,64}", local["voice_id"]
-    ):
-        raise BreezeError("服务端音色 ID 须为 1–64 个字母、数字、短横线或下划线。")
+    if local["voice_id"]:
+        validate_cpp_voice_id(local["voice_id"])
     if local["output_format"] not in {"pcm", "wav", "mp3"}:
         raise BreezeError("C++ 输出格式须为 PCM、WAV 或 MP3。")
     if cloud["output_format"] not in FORMATS or cloud["delivery"] not in {

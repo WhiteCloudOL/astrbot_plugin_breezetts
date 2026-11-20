@@ -137,7 +137,7 @@
             <div class="span-all"><h2>语音转换（C++）</h2><p>保留源录音内容与节奏，换成目标音色。源录音可不填写文字稿，填写准确稿可改善效果。</p></div>
             <div><label for="conversion-source">源录音</label><select id="conversion-source"></select><button id="upload-conversion-source" class="text-button" type="button">上传源录音</button></div>
             <div><label for="conversion-target">目标来源</label><select id="conversion-target"><option value="voice">服务端音色</option><option value="reference">插件参考录音</option></select></div>
-            <div><label for="conversion-voice">目标服务端音色 ID</label><input id="conversion-voice" maxlength="64" placeholder="选择音色后自动填写，也可手动输入" /></div>
+            <div><label for="conversion-voice">目标服务端音色 ID</label><input id="conversion-voice" maxlength="137" placeholder="选择音色后自动填写，也可手动输入" /></div>
             <div><label for="conversion-reference">目标参考录音（需文字稿）</label><select id="conversion-reference"></select></div>
             <div class="span-all"><label for="conversion-text">源录音文字稿（可选）</label><textarea id="conversion-text" rows="2" maxlength="16000"></textarea></div>
             <div><label for="conversion-temperature">Temperature</label><input id="conversion-temperature" type="number" min="0" max="5" step="0.05" value="0.3" /></div>
@@ -390,7 +390,7 @@
                   <option value="reference">使用插件参考录音</option>
                   <option value="design">声音设计</option>
                   <option value="plain">普通朗读</option></select
-                ><label for="local-server-voice">服务端音色 ID</label><input id="local-server-voice" data-config="local.voice_id" maxlength="64" placeholder="在音色管理中上传或选择，也可直接填入 ID"
+                ><label for="local-server-voice">服务端音色 ID</label><input id="local-server-voice" data-config="local.voice_id" maxlength="137" placeholder="在音色管理中上传或选择，也可直接填入 ID"
                 ><label for="local-reference">默认参考录音</label
                 ><select
                   id="local-reference"

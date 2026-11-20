@@ -1056,7 +1056,7 @@ async function loadServerVoices(revealId = "") {
   serverCatalogKey = key;
   serverCatalog = voices.map(voice => ({
     voice,
-    searchText: [voice.id, voice.metadata.name, voice.description, voice.ref_text]
+    searchText: [voice.id, voice.metadata.name, voice.name, voice.description, voice.ref_text]
       .join(" ").normalize("NFKC").toLowerCase(),
   }));
   if (revealId) {
@@ -1089,7 +1089,7 @@ function renderServerVoices() {
     card.className = "voice-card";
     card.dataset.serverVoiceId = voice.id;
     const title = document.createElement("strong");
-    title.textContent = voice.metadata.name?.trim() || voice.id;
+    title.textContent = voice.metadata.name?.trim() || voice.name?.trim() || voice.id;
     const meta = document.createElement("small");
     meta.textContent = `${title.textContent !== voice.id ? voice.id + " · " : ""}${voice.saved ? "持久音色" : "内存缓存"} · ${voice.seconds} 秒 · 编码 ${voice.encode_ms} ms`;
     const description = document.createElement("p");

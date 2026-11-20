@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 import aiohttp
 
-from .settings import BreezeError, validate_identifier
+from .settings import BreezeError, validate_cpp_voice_id
 from .storage import playable_audio
 
 
@@ -30,9 +30,7 @@ def voice_info(value: dict) -> dict:
     """
     if not isinstance(value, dict):
         raise BreezeError("服务端音色数据格式无效。")
-    identifier = validate_identifier(value.get("id"), label="服务端音色 ID", limit=64)
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", identifier):
-        raise BreezeError("服务端音色 ID 格式无效。")
+    identifier = validate_cpp_voice_id(value.get("id"))
     for key in ("seconds", "frames", "encode_ms"):
         number = value.get(key, 0)
         if type(number) not in {int, float} or not math.isfinite(number) or number < 0:
@@ -56,7 +54,7 @@ def voice_info(value: dict) -> dict:
         )
     ):
         raise BreezeError("服务端音色描述或元数据无效。")
-    return {
+    voice = {
         "id": identifier,
         "saved": value.get("saved", False),
         "ref_text": text,
@@ -64,6 +62,10 @@ def voice_info(value: dict) -> dict:
         "metadata": metadata,
         **{key: value.get(key, 0) for key in ("frames", "seconds", "encode_ms")},
     }
+    name = value.get("name")
+    if isinstance(name, str) and 1 <= len(name) <= 200:
+        voice["name"] = name
+    return voice
 
 
 class CppAPI:
@@ -130,14 +132,7 @@ class CppAPI:
         """
         path = "voices"
         if identifier:
-            if not isinstance(identifier, str) or not re.fullmatch(
-                r"[A-Za-z0-9_-]{1,64}", identifier
-            ):
-                raise BreezeError("服务端音色 ID 格式无效。")
-            path += "/" + quote(
-                validate_identifier(identifier, label="服务端音色 ID", limit=64),
-                safe="",
-            )
+            path += "/" + quote(validate_cpp_voice_id(identifier), safe="")
         # C++ returns the complete catalog. Allow a larger bounded list for local search.
         result = await self.client.request(
             connection,
@@ -189,11 +184,7 @@ class CppAPI:
                 )
             identifier = name
         else:
-            identifier = validate_identifier(
-                payload.get("id", ""), label="服务端音色 ID", limit=64
-            )
-            if not re.fullmatch(r"[A-Za-z0-9_-]+", identifier):
-                raise BreezeError("服务端音色 ID 格式无效。")
+            identifier = validate_cpp_voice_id(payload.get("id"))
         patch = {}
         if "description" in payload:
             description = payload["description"]
@@ -315,9 +306,7 @@ class CppAPI:
                 raise BreezeError(
                     "请在音色管理中上传录音并保存到服务端，或选择已有服务端音色。"
                 )
-            payload["voice_id"] = validate_identifier(
-                connection["voice_id"], label="服务端音色 ID", limit=64
-            )
+            payload["voice_id"] = validate_cpp_voice_id(connection["voice_id"])
         elif connection["mode"] == "reference" and (
             reference is None or not reference[1].strip()
         ):
@@ -439,11 +428,9 @@ class CppAPI:
             ):
                 raise BreezeError(f"语音转换参数 {key} 须介于 {low} 和 {high}。")
         if payload.get("voice_id"):
-            fields["voice_id"] = validate_identifier(
-                payload["voice_id"], label="目标音色 ID", limit=64
+            fields["voice_id"] = validate_cpp_voice_id(
+                payload["voice_id"], "目标音色 ID"
             )
-            if not re.fullmatch(r"[A-Za-z0-9_-]+", fields["voice_id"]):
-                raise BreezeError("目标音色 ID 格式无效。")
         elif reference is None or not reference[1].strip():
             raise BreezeError("请选择服务端音色，或配有文字稿的目标参考录音。")
         if fields["seed"] >= 2**31:
