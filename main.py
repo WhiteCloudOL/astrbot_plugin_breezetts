@@ -128,8 +128,8 @@ class BreezeTTS(Star):
         requests. text contains dialogue and optional controls, not JSON or analysis.
         With dynamic tone enabled, consider fitting emotion or rhythm; tags and
         instructions are optional. Fixed platforms need exact allowed styles. Breeze
-        accepts free delivery via instruction or [语气:description], while native
-        events use current catalog spellings. Prefer one overall tone for short
+        accepts free delivery via instruction or [语气:description], e.g. [语气:促狭].
+        Reserve bare brackets for native catalog events. Prefer one overall tone for short
         replies; change sections only at natural boundaries. Use brief steady
         directions, not multi-step scripts or repeated vocal events. Put a section
         direction before its dialogue and events, never empty or trailing. Normal
