@@ -363,10 +363,9 @@ def test_breeze_reference_table_does_not_limit_free_directions(config, backend):
     direction = "努力藏住突然重逢的惊喜，语速先快后慢，最后轻声安慰"
     check_directions(profile, direction)
     rendered = control_prompt(local=backend == "local", profile=profile)
-    assert (
-        "OPEN performance vocabulary" in rendered
-        and "not an exhaustive allowlist" in rendered
-    )
+    assert "[语气:description] or instruction" in rendered
+    assert "Reserve bare brackets for catalog events" in rendered
+    assert "[语气:促狭]" in rendered
     assert "Use only exact native token spellings from the catalog" not in rendered
     assert "Breeze 推荐参考" in rendered and "[自定义事件]" in rendered
     assert (

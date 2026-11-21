@@ -958,6 +958,43 @@ async def test_reply_controls_survive_planning_and_hidden_captions(
     await plugin.release_speech_audio(event)
 
 
+@pytest.mark.parametrize("source", ["tool", "random", "tags"])
+@pytest.mark.parametrize("dynamic_tone", [False, True])
+async def test_unprefixed_direction_does_not_leak_to_chat_caption(
+    speech_plugin, event_factory, monkeypatch, source, dynamic_tone
+):
+    plugin, calls, _ = speech_plugin
+    plugin.config["behavior"].update(dynamic_tone=dynamic_tone, keep_text=True)
+    spy = AsyncMock(wraps=plugin.service.client.synthesize)
+    monkeypatch.setattr(plugin.service.client, "synthesize", spy)
+    event = event_factory()
+    text = "[促狭]现在酒醒了？"
+    if source == "tool":
+        receipt = json.loads(await plugin.breeze_tts(event, text))
+        assert receipt["status"] == "sent" and receipt["caption_sent"]
+    else:
+        if source == "tags":
+            text = f"<tts>{text}</tts>"
+        event.set_result(
+            MessageEventResult(
+                chain=[Plain(text)], result_content_type=ResultContentType.LLM_RESULT
+            )
+        )
+        await decorate_model_result(plugin, event)
+        await plugin.preserve_speech_order(event)
+
+    assert len(event.sent) == 2
+    assert len(event.sent[0]) == 1 and isinstance(event.sent[0][0], Plain)
+    assert len(event.sent[1]) == 1 and isinstance(event.sent[1][0], Record)
+    caption = "现在酒醒了？"
+    assert event.sent[0][0].text == event.sent[1][0].text == caption
+    assert calls == [caption]
+    assert spy.await_args.args[0]["local"]["instruction"] == (
+        "促狭" if dynamic_tone else ""
+    )
+    await plugin.release_speech_audio(event)
+
+
 async def test_tool_failed_voice_does_not_repeat_delivered_caption(
     speech_plugin, event_factory
 ):
@@ -2453,7 +2490,8 @@ async def test_breeze_adaptation_uses_unlisted_free_direction_with_curated_refer
     assert event.sent[0][0].text == original
     assert [type(chain[0]) for chain in event.sent] == [Plain, Record]
     prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
-    assert "not an exhaustive allowlist" in prompt and "[咳嗽]" in prompt
+    assert "[语气:description] or instruction" in prompt
+    assert "Reserve bare brackets for catalog events" in prompt and "[咳嗽]" in prompt
 
 
 @pytest.mark.parametrize(

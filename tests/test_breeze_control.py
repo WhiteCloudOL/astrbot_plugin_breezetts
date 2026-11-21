@@ -34,6 +34,20 @@ def test_controls_preserve_literals_and_off_mode():
     ]
 
 
+def test_unprefixed_playful_direction_hides_without_removing_literal_brackets():
+    text = "昨晚是谁？[促狭]现在酒醒了？"
+    plain = "昨晚是谁？现在酒醒了？"
+    assert clean_breeze_text(text) == plain
+    assert parse_breeze_text(text, enabled=True) == [
+        ("昨晚是谁？", ""),
+        ("现在酒醒了？", "促狭"),
+    ]
+    assert parse_breeze_text(text, enabled=False) == [(plain, "")]
+    literal = r"[普通括号] `[促狭]` \[促狭] [促狭](https://example.com)"
+    assert clean_breeze_text(literal) == literal
+    assert parse_breeze_text(text, enabled=True, tags=("[促狭]",)) == [(text, "")]
+
+
 @pytest.mark.parametrize(
     "prefix,tags",
     [

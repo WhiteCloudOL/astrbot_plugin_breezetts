@@ -30,6 +30,8 @@ def control_pattern(tags: tuple[str, ...] | None = None) -> re.Pattern:
         A cached pattern with protected, direction, and event groups.
     """
     events = EVENTS if tags is None else set(tags)
+    # Keep explicitly configured native events ahead of the model's shorthand.
+    shorthand = r"|促狭\]" if "[促狭]" not in events else ""
     return re.compile(
         r"(?P<protected>```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]*(?:`|$)"
         r"|\\[\[(][^\]\)\r\n]*[\]\)]|\[[^\]\r\n]*\]\((?!"
@@ -39,7 +41,7 @@ def control_pattern(tags: tuple[str, ...] | None = None) -> re.Pattern:
         )
         + r")[^\)\r\n]*\))"
         r"|(?P<direction>\[(?:(?:语气|style|話し方)\s*[:：][^\]\r\n]*(?:\]|(?=\r?\n)|$)"
-        r"|用[^\[\]\r\n]+?语气(?:说话|说)?\]))"
+        r"|用[^\[\]\r\n]+?语气(?:说话|说)?\]" + shorthand + r"))"
         r"|(?P<event>"
         + (
             "|".join(re.escape(tag) for tag in sorted(events, key=len, reverse=True))
@@ -188,8 +190,8 @@ def control_prompt(
     policy += "Tags and instructions are recommendations, never mandatory. Plain narration is valid. "
     if reference:
         policy += (
-            "Breeze has an OPEN performance vocabulary, not an exhaustive allowlist: write new delivery descriptions as [语气:description] or instruction. "
-            "Native events retain their catalog spelling. "
+            "Write free delivery descriptions as [语气:description] or instruction. "
+            "Reserve bare brackets for catalog events; write [语气:促狭] for a playful tone. "
         )
     else:
         policy += "Use only exact native token spellings from the catalog; free directions use [语气:description] or instruction where supported. "
